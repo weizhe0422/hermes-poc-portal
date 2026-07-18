@@ -1,0 +1,106 @@
+# 文件目的：定義Portal穩定Route、頁面狀態及黑箱E2E可依賴的Accessible Name與data-testid，避免測試依賴CSS結構。
+# 適用角色：Frontend實作者、Portal E2E實作者。
+# 狀態：Draft v0.1。
+
+contract_version: 0.1.0
+
+routes:
+  home:
+    path: /
+    purpose: Runtime狀態與兩個情境入口。
+  control_wafer:
+    path: /scenarios/control-wafer
+    purpose: 控片知識問答。
+  deployment_check:
+    path: /scenarios/deployment-check
+    purpose: 系統上線流程檢查。
+  history:
+    path: /history
+    purpose: 任務歷史與版本追溯。
+  evaluations:
+    path: /evaluations
+    purpose: 測試案例與執行結果。
+
+stable_elements:
+  runtime_status:
+    role: status
+    test_id: runtime-status
+  runtime_start:
+    role: button
+    accessible_name: 啟動 Hermes
+    test_id: runtime-start
+  runtime_stop:
+    role: button
+    accessible_name: 停止 Hermes
+    test_id: runtime-stop
+  runtime_restart:
+    role: button
+    accessible_name: 重新啟動 Hermes
+    test_id: runtime-restart
+  control_wafer_card:
+    role: link
+    accessible_name: 控片知識助手
+    test_id: scenario-control-wafer
+  deployment_card:
+    role: link
+    accessible_name: 系統上線流程檢查
+    test_id: scenario-deployment-check
+  knowledge_question:
+    role: textbox
+    accessible_name: 問題
+    test_id: knowledge-question
+  knowledge_submit:
+    role: button
+    accessible_name: 送出問題
+    test_id: knowledge-submit
+  knowledge_status:
+    role: status
+    test_id: knowledge-result-status
+  source_list:
+    role: list
+    accessible_name: 引用來源
+    test_id: source-list
+  deployment_submit:
+    role: button
+    accessible_name: 執行上線檢查
+    test_id: deployment-submit
+  deployment_overall_status:
+    role: status
+    test_id: deployment-overall-status
+  task_history:
+    role: table
+    accessible_name: 任務歷史
+    test_id: task-history
+  feedback_correct:
+    role: button
+    accessible_name: 正確
+    test_id: feedback-correct
+  feedback_partial:
+    role: button
+    accessible_name: 部分正確
+    test_id: feedback-partial
+  feedback_incorrect:
+    role: button
+    accessible_name: 錯誤
+    test_id: feedback-incorrect
+
+page_behavior:
+  when_runtime_not_healthy:
+    scenario_submit_disabled: true
+    home_runtime_controls_enabled: true
+  when_operation_running:
+    conflicting_runtime_controls_disabled: true
+    progress_indicator_required: true
+  when_api_error:
+    show_user_message: true
+    show_correlation_id: true
+    expose_stack_trace: false
+
+testing_rules:
+  preferred_locator_order:
+    - accessible_role_and_name
+    - stable_test_id
+  forbidden_locators:
+    - generated_css_class
+    - element_index_without_semantics
+    - internal_component_name

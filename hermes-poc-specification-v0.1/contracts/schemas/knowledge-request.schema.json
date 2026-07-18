@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/schemas/knowledge-request.schema.json",
+  "$comment": "文件目的：定義控片知識助手的Portal輸入；不得在問題欄位夾帶任意工具或Docker命令。",
+  "title": "KnowledgeRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["question"],
+  "properties": {
+    "question": {"type": "string", "minLength": 1, "maxLength": 8000},
+    "source_scope": {
+      "type": "array",
+      "items": {"type": "string"},
+      "default": []
+    }
+  }
+}

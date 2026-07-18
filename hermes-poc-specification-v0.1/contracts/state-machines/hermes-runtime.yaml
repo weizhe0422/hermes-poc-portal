@@ -1,0 +1,148 @@
+# 文件目的：定義Hermes Runtime可觀察狀態、事件、合法轉移、冪等行為及錯誤語意；Portal、Controller與E2E均須遵守。
+# 適用角色：平台實作者、測試實作者、功能測試執行者。
+# 狀態：Draft v0.1。
+
+contract_version: 0.1.0
+initial_state: NOT_PROVISIONED
+
+states:
+  NOT_PROVISIONED:
+    description: Hermes Container不存在或不符合受管Instance識別。
+  STOPPED:
+    description: 受管Container存在但未執行。
+  STARTING:
+    description: Start已接受，等待Container、Hermes與LLM健康檢查。
+  HEALTHY:
+    description: Container Running，Hermes API與核准LLM Probe均成功。
+  UNHEALTHY:
+    description: Container Running，但Hermes或LLM健康檢查失敗。
+  STOPPING:
+    description: Stop已接受，等待Container停止。
+  ERROR:
+    description: Lifecycle操作失敗或逾時，且錯誤已被保存。
+
+events:
+  PROVISION_DISCOVERED: {}
+  START_REQUESTED: {}
+  START_SUCCEEDED: {}
+  START_HEALTH_FAILED: {}
+  START_TIMEOUT: {}
+  STOP_REQUESTED: {}
+  STOP_SUCCEEDED: {}
+  STOP_FAILED: {}
+  RESTART_REQUESTED: {}
+  HEALTH_RECOVERED: {}
+  HEALTH_LOST: {}
+  INSTANCE_REMOVED_EXTERNALLY: {}
+
+transitions:
+  - from: NOT_PROVISIONED
+    event: PROVISION_DISCOVERED
+    to: STOPPED
+  - from: STOPPED
+    event: START_REQUESTED
+    to: STARTING
+  - from: STARTING
+    event: START_SUCCEEDED
+    to: HEALTHY
+  - from: STARTING
+    event: START_HEALTH_FAILED
+    to: UNHEALTHY
+  - from: STARTING
+    event: START_TIMEOUT
+    to: ERROR
+  - from: HEALTHY
+    event: STOP_REQUESTED
+    to: STOPPING
+  - from: UNHEALTHY
+    event: STOP_REQUESTED
+    to: STOPPING
+  - from: ERROR
+    event: STOP_REQUESTED
+    to: STOPPING
+  - from: STOPPING
+    event: STOP_SUCCEEDED
+    to: STOPPED
+  - from: STOPPING
+    event: STOP_FAILED
+    to: ERROR
+  - from: HEALTHY
+    event: RESTART_REQUESTED
+    to: STOPPING
+    continuation: START_REQUESTED
+  - from: UNHEALTHY
+    event: RESTART_REQUESTED
+    to: STOPPING
+    continuation: START_REQUESTED
+  - from: ERROR
+    event: RESTART_REQUESTED
+    to: STOPPING
+    continuation: START_REQUESTED
+  - from: UNHEALTHY
+    event: HEALTH_RECOVERED
+    to: HEALTHY
+  - from: HEALTHY
+    event: HEALTH_LOST
+    to: UNHEALTHY
+  - from: STOPPED
+    event: INSTANCE_REMOVED_EXTERNALLY
+    to: NOT_PROVISIONED
+  - from: HEALTHY
+    event: INSTANCE_REMOVED_EXTERNALLY
+    to: NOT_PROVISIONED
+  - from: UNHEALTHY
+    event: INSTANCE_REMOVED_EXTERNALLY
+    to: NOT_PROVISIONED
+  - from: ERROR
+    event: INSTANCE_REMOVED_EXTERNALLY
+    to: NOT_PROVISIONED
+
+idempotent_requests:
+  - state: HEALTHY
+    action: START
+    http_status: 200
+    result: NO_OP_ALREADY_STARTED
+  - state: STARTING
+    action: START
+    http_status: 202
+    result: EXISTING_OPERATION
+  - state: STOPPED
+    action: STOP
+    http_status: 200
+    result: NO_OP_ALREADY_STOPPED
+  - state: STOPPING
+    action: STOP
+    http_status: 202
+    result: EXISTING_OPERATION
+
+invalid_requests:
+  - state: NOT_PROVISIONED
+    actions: [START, STOP, RESTART]
+    http_status: 404
+    error_code: INSTANCE_NOT_FOUND
+  - state: STOPPED
+    actions: [RESTART]
+    http_status: 409
+    error_code: INVALID_STATE_TRANSITION
+  - state: STARTING
+    actions: [STOP, RESTART]
+    http_status: 409
+    error_code: OPERATION_CONFLICT
+  - state: STOPPING
+    actions: [START, RESTART]
+    http_status: 409
+    error_code: OPERATION_CONFLICT
+
+health_contract:
+  healthy_requires:
+    - container_status == RUNNING
+    - hermes_status == AVAILABLE
+    - llm_status == AVAILABLE
+  container_running_alone_is_not_healthy: true
+
+operation_rules:
+  one_operation_per_instance: true
+  start_timeout_seconds_from_environment: HERMES_START_TIMEOUT_SECONDS
+  stop_timeout_seconds_from_environment: HERMES_STOP_TIMEOUT_SECONDS
+  restart_preserves_volumes: true
+  start_never_creates_arbitrary_instance: true

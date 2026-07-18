@@ -1,0 +1,432 @@
+# 文件目的：定義Browser與外部Portal E2E可使用的唯一Portal REST API；實作與測試不得依賴未列出的內部Endpoint。
+# 適用角色：Portal實作者、Portal E2E實作者、功能測試執行者。
+# 狀態：Draft v0.1。
+
+openapi: 3.1.0
+info:
+  title: Hermes PoC Portal API
+  version: 0.1.0
+  license:
+    name: Internal PoC - not for redistribution
+  description: >-
+    封閉網路、本機PoC的Portal公開API。所有錯誤均須符合ErrorResponse，且不得洩漏Stack Trace、Secret或Host絕對路徑。
+servers:
+  - url: http://portal:8080
+security: []
+x-security-context: v0.1僅綁定本機且未實作API認證；若發布到區域網路，必須先新增核准的Authentication Contract。
+
+paths:
+  /health/live:
+    get:
+      operationId: portalLiveness
+      summary: 確認Portal Process存活。
+      responses:
+        "200":
+          description: Portal存活。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /health/ready:
+    get:
+      operationId: portalReadiness
+      summary: 確認Portal與Database可接受要求；不要求Hermes必須Healthy。
+      responses:
+        "200":
+          description: Portal Ready。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/runtime/status:
+    get:
+      operationId: getRuntimeStatus
+      summary: 查詢預設Hermes Instance、Controller與LLM狀態。
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: Runtime狀態。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/runtime/start:
+    post:
+      operationId: startRuntime
+      summary: 啟動預先建立且受管的Hermes Instance。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimeActionRequest"
+      responses:
+        "200":
+          description: Instance已在目標狀態，冪等No-op。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "202":
+          description: Start已接受或既有Start仍在進行。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/runtime/stop:
+    post:
+      operationId: stopRuntime
+      summary: 正常停止受管Hermes Instance，不移除Container或Volume。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimeActionRequest"
+      responses:
+        "200":
+          description: Instance已停止，冪等No-op。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "202":
+          description: Stop已接受或既有Stop仍在進行。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/runtime/restart:
+    post:
+      operationId: restartRuntime
+      summary: 重新啟動Healthy、Unhealthy或Error的Hermes Instance。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RuntimeActionRequest"
+      responses:
+        "202":
+          description: Restart已接受。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/runtime/logs:
+    get:
+      operationId: getRuntimeLogs
+      summary: 取得經Secret Redaction的最近Hermes Log。
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - name: tail
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        "200":
+          description: 遮蔽後Log。
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [instance_id, lines, redacted]
+                properties:
+                  instance_id: {type: string}
+                  lines: {type: array, items: {type: string}}
+                  redacted: {type: boolean, const: true}
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/scenarios:
+    get:
+      operationId: listScenarios
+      summary: 列出Portal支援的固定情境。
+      responses:
+        "200":
+          description: 固定情境清單。
+          content:
+            application/json:
+              schema:
+                type: array
+                minItems: 2
+                items:
+                  $ref: "#/components/schemas/Scenario"
+
+  /api/tasks:
+    get:
+      operationId: listTasks
+      summary: 依時間倒序列出Task History。
+      parameters:
+        - name: limit
+          in: query
+          schema: {type: integer, minimum: 1, maximum: 100, default: 20}
+      responses:
+        "200":
+          description: Task清單。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "../schemas/task-run.schema.json"
+    post:
+      operationId: createTask
+      summary: 建立Knowledge或Deployment Check Task；Hermes非Healthy時拒絕。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskCreateRequest"
+      responses:
+        "202":
+          description: Task已建立。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/task-run.schema.json"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/tasks/{task_id}:
+    get:
+      operationId: getTask
+      summary: 取得Task、結果、Raw Response與版本。
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "200":
+          description: Task。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/task-run.schema.json"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/tasks/{task_id}/cancel:
+    post:
+      operationId: cancelTask
+      summary: 要求取消Queued或Running Task。
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      responses:
+        "202":
+          description: Cancel已接受。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/task-run.schema.json"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+
+  /api/tasks/{task_id}/feedback:
+    post:
+      operationId: submitFeedback
+      summary: 保存使用者對Task結果的回饋。
+      parameters:
+        - $ref: "#/components/parameters/TaskId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FeedbackRequest"
+      responses:
+        "201":
+          description: Feedback已保存。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FeedbackResponse"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+  /api/evaluations/run:
+    post:
+      operationId: runEvaluation
+      summary: 執行一個已版本化的Evaluation Case或Suite。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [case_ids]
+              properties:
+                case_ids:
+                  type: array
+                  minItems: 1
+                  items: {type: string}
+      responses:
+        "202":
+          description: Evaluation已建立。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationRun"
+        "422":
+          $ref: "#/components/responses/ValidationError"
+
+  /api/evaluations/runs/{run_id}:
+    get:
+      operationId: getEvaluationRun
+      summary: 取得Evaluation進度與摘要。
+      parameters:
+        - name: run_id
+          in: path
+          required: true
+          schema: {type: string}
+      responses:
+        "200":
+          description: Evaluation Run。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/EvaluationRun"
+        "404":
+          $ref: "#/components/responses/NotFound"
+
+components:
+  parameters:
+    InstanceId:
+      name: instance_id
+      in: query
+      required: true
+      schema: {type: string}
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema: {type: string}
+
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status: {type: string, enum: [OK, NOT_READY]}
+    RuntimeActionRequest:
+      type: object
+      additionalProperties: false
+      required: [instance_id]
+      properties:
+        instance_id: {type: string, minLength: 1}
+    Scenario:
+      type: object
+      additionalProperties: false
+      required: [id, name, enabled]
+      properties:
+        id: {type: string, enum: [CONTROL_WAFER_KNOWLEDGE, DEPLOYMENT_CHECK]}
+        name: {type: string}
+        enabled: {type: boolean}
+    TaskCreateRequest:
+      oneOf:
+        - type: object
+          additionalProperties: false
+          required: [instance_id, scenario, payload]
+          properties:
+            instance_id: {type: string}
+            scenario: {const: CONTROL_WAFER_KNOWLEDGE}
+            payload:
+              $ref: "../schemas/knowledge-request.schema.json"
+        - type: object
+          additionalProperties: false
+          required: [instance_id, scenario, payload]
+          properties:
+            instance_id: {type: string}
+            scenario: {const: DEPLOYMENT_CHECK}
+            payload:
+              $ref: "../schemas/deployment-check-request.schema.json"
+    FeedbackRequest:
+      type: object
+      additionalProperties: false
+      required: [rating]
+      properties:
+        rating: {type: string, enum: [CORRECT, PARTIAL, INCORRECT]}
+        comment: {type: [string, "null"], maxLength: 4000}
+    FeedbackResponse:
+      type: object
+      additionalProperties: false
+      required: [feedback_id, task_id, rating, created_at]
+      properties:
+        feedback_id: {type: string}
+        task_id: {type: string}
+        rating: {type: string, enum: [CORRECT, PARTIAL, INCORRECT]}
+        comment: {type: [string, "null"]}
+        created_at: {type: string, format: date-time}
+    EvaluationRun:
+      type: object
+      additionalProperties: false
+      required: [run_id, status, case_ids, created_at]
+      properties:
+        run_id: {type: string}
+        status: {type: string, enum: [QUEUED, RUNNING, PASS, FAIL, REVIEW_REQUIRED]}
+        case_ids: {type: array, items: {type: string}}
+        critical_failures: {type: array, items: {type: string}}
+        created_at: {type: string, format: date-time}
+        completed_at: {type: [string, "null"], format: date-time}
+
+  responses:
+    NotFound:
+      description: 資源不存在。
+      content:
+        application/json:
+          schema:
+            $ref: "../schemas/error-response.schema.json"
+    Conflict:
+      description: 狀態或操作衝突。
+      content:
+        application/json:
+          schema:
+            $ref: "../schemas/error-response.schema.json"
+    ValidationError:
+      description: 輸入驗證失敗。
+      content:
+        application/json:
+          schema:
+            $ref: "../schemas/error-response.schema.json"
+    ServiceUnavailable:
+      description: 依賴服務不可用。
+      content:
+        application/json:
+          schema:
+            $ref: "../schemas/error-response.schema.json"

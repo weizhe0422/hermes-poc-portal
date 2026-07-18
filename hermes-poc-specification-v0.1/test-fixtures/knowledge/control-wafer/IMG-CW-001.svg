@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="420" viewBox="0 0 800 420">
+  <rect width="800" height="420" fill="#f4f7fb"/>
+  <rect x="30" y="30" width="740" height="360" rx="16" fill="#ffffff" stroke="#334155" stroke-width="3"/>
+  <text x="60" y="85" font-family="sans-serif" font-size="28" font-weight="bold" fill="#0f172a">TEST ONLY - Control Wafer Screen</text>
+  <text x="60" y="145" font-family="sans-serif" font-size="24" fill="#334155">Object ID: SYNTHETIC-001</text>
+  <text x="60" y="200" font-family="sans-serif" font-size="24" fill="#334155">Cycle Count: 2</text>
+  <rect x="540" y="120" width="180" height="90" rx="12" fill="#facc15" stroke="#a16207" stroke-width="3"/>
+  <text x="575" y="175" font-family="sans-serif" font-size="30" font-weight="bold" fill="#713f12">YELLOW</text>
+  <text x="60" y="285" font-family="sans-serif" font-size="20" fill="#475569">The upper-right label is the inspection status.</text>
+  <text x="60" y="330" font-family="sans-serif" font-size="20" fill="#475569">This synthetic image is not production data.</text>
+</svg>

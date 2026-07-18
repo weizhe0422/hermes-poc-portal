@@ -1,0 +1,24 @@
+# 文件目的：提供規格、Contract、測試、Knowledge、Skill與Image版本的單一Manifest範本；每次Build與測試均須複製並填入實際值。
+# 適用角色：所有角色。
+# 狀態：Draft v0.1。
+
+spec_version: 0.1.0
+portal_api_version: 0.1.0
+controller_api_version: 0.1.0
+ui_contract_version: 0.1.0
+runtime_state_machine_version: 0.1.0
+error_catalog_version: 0.1.0
+test_suite_version: 0.1.0
+
+runtime_values_to_fill:
+  git_commit: null
+  portal_image_digest: null
+  controller_image_digest: null
+  hermes_image_digest: null
+  portal_e2e_image_digest: null
+  controller_e2e_image_digest: null
+  model_name: null
+  model_version: null
+  knowledge_version: null
+  skill_version: null
+  executed_at: null

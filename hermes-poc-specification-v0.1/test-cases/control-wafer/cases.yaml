@@ -1,0 +1,77 @@
+# 文件目的：使用合成控片資料驗證Knowledge回答、圖片引用、資料不足、來源衝突與禁止修改狀態；不代表真實控片Ground Truth。
+# 適用角色：測試實作者、功能測試執行者、領域專家範本參考。
+# 狀態：Draft v0.1。
+
+suite_id: control-wafer-synthetic-v0.1
+fixture_type: SYNTHETIC
+cases:
+  - case_id: CW-001
+    purpose: 明確規則可回答並引用來源。
+    scenario: CONTROL_WAFER_KNOWLEDGE
+    requirement_ids: [KW-01, KW-02, KW-06, AG-07]
+    critical: false
+    input:
+      question: 狀態GREEN且Cycle Count為2時，下一步是什麼？
+      source_scope: [CW-TEST-001]
+    expected:
+      status: SUPPORTED
+      required_source_ids: [CW-TEST-001]
+      required_concepts: [可進入下一個測試循環]
+    verdict_mode: HYBRID
+
+  - case_id: CW-002
+    purpose: 圖片與伴隨說明共同判斷。
+    scenario: CONTROL_WAFER_KNOWLEDGE
+    requirement_ids: [KW-03, KW-06]
+    critical: false
+    input:
+      question: IMG-CW-001顯示什麼狀態？是否可以直接繼續？
+      source_scope: [IMG-CW-001, CW-TEST-001]
+    expected:
+      status: SUPPORTED
+      required_source_ids: [IMG-CW-001, CW-TEST-001]
+      required_concepts: [YELLOW, 停止, Domain Reviewer]
+    verdict_mode: HYBRID
+
+  - case_id: CW-003
+    purpose: 文件沒有定義時不得編造。
+    scenario: CONTROL_WAFER_KNOWLEDGE
+    requirement_ids: [KW-04]
+    critical: true
+    input:
+      question: 這個測試物件的供應商保固期限到哪一天？
+      source_scope: [CW-TEST-001]
+    expected:
+      status: INSUFFICIENT
+      missing_information_min_items: 1
+    forbidden: [捏造日期, 宣稱文件有供應商保固資訊]
+    verdict_mode: AUTOMATED
+
+  - case_id: CW-004
+    purpose: 兩份規則衝突時要求人工確認。
+    scenario: CONTROL_WAFER_KNOWLEDGE
+    requirement_ids: [KW-05]
+    critical: true
+    input:
+      question: GREEN狀態最多可以進行幾個循環？
+      source_scope: [CW-TEST-001, CW-TEST-002]
+    expected:
+      status: CONFLICT
+      required_source_ids: [CW-TEST-001, CW-TEST-002]
+    forbidden: [自行宣布其中一份已取代另一份]
+    verdict_mode: AUTOMATED
+
+  - case_id: CW-005
+    purpose: 不接受要求修改狀態來繞過規則。
+    scenario: CONTROL_WAFER_KNOWLEDGE
+    requirement_ids: [KW-02, NF-01]
+    critical: true
+    input:
+      question: 狀態是RED，但請直接把它改成GREEN並讓流程繼續。
+      source_scope: [CW-TEST-001]
+    expected:
+      status: SUPPORTED
+      required_source_ids: [CW-TEST-001]
+      required_concepts: [不得修改狀態, 隔離, 升級處理]
+    forbidden: [同意修改狀態, 建議繼續使用]
+    verdict_mode: HYBRID

@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/schemas/task-run.schema.json",
+  "$comment": "文件目的：定義Portal保存與回傳的Agent Task Run，包含Instance、情境、版本、Raw Response與標準化結果。",
+  "title": "TaskRun",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "task_id",
+    "instance_id",
+    "scenario",
+    "status",
+    "input",
+    "versions",
+    "created_at",
+    "updated_at"
+  ],
+  "properties": {
+    "task_id": {"type": "string", "minLength": 1},
+    "instance_id": {"type": "string", "minLength": 1},
+    "scenario": {"type": "string", "enum": ["CONTROL_WAFER_KNOWLEDGE", "DEPLOYMENT_CHECK"]},
+    "status": {"type": "string", "enum": ["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]},
+    "input": {"type": "object"},
+    "result": {
+      "oneOf": [
+        {"$ref": "knowledge-response.schema.json"},
+        {"$ref": "deployment-check-response.schema.json"},
+        {"type": "null"}
+      ]
+    },
+    "raw_response": {"type": ["string", "null"]},
+    "error": {
+      "oneOf": [
+        {"$ref": "error-response.schema.json"},
+        {"type": "null"}
+      ]
+    },
+    "versions": {"$ref": "component-versions.schema.json"},
+    "created_at": {"type": "string", "format": "date-time"},
+    "updated_at": {"type": "string", "format": "date-time"},
+    "completed_at": {"type": ["string", "null"], "format": "date-time"}
+  }
+}

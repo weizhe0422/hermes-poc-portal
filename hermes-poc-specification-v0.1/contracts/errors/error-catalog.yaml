@@ -1,0 +1,96 @@
+# 文件目的：定義Portal與Controller可對外回傳的錯誤代碼、HTTP狀態、Retry語意與不可洩漏資訊。
+# 適用角色：平台實作者、測試實作者、功能測試執行者。
+# 狀態：Draft v0.1。
+
+contract_version: 0.1.0
+
+errors:
+  DOCKER_UNAVAILABLE:
+    delivery: HTTP
+    http_status: 503
+    retryable: true
+    user_message: Docker服務目前無法使用。
+  INSTANCE_NOT_FOUND:
+    delivery: HTTP
+    http_status: 404
+    retryable: false
+    user_message: 指定的Hermes Instance尚未建立。
+  INSTANCE_NOT_MANAGED:
+    delivery: HTTP
+    http_status: 403
+    retryable: false
+    user_message: 指定的Container不在Portal管理範圍內。
+  OPERATION_CONFLICT:
+    delivery: HTTP
+    http_status: 409
+    retryable: true
+    user_message: 此Instance目前已有生命週期操作執行中。
+  INVALID_STATE_TRANSITION:
+    delivery: HTTP
+    http_status: 409
+    retryable: false
+    user_message: 目前狀態不允許執行此操作。
+  RUNTIME_START_TIMEOUT:
+    delivery: RESOURCE_STATE
+    http_status: null
+    retryable: true
+    user_message: Hermes啟動逾時。
+  RUNTIME_STOP_TIMEOUT:
+    delivery: RESOURCE_STATE
+    http_status: null
+    retryable: true
+    user_message: Hermes停止逾時。
+  HERMES_UNHEALTHY:
+    delivery: BOTH
+    http_status: 503
+    retryable: true
+    user_message: Hermes已執行但健康檢查未通過。
+  LLM_UNAVAILABLE:
+    delivery: BOTH
+    http_status: 503
+    retryable: true
+    user_message: 內部模型服務目前無法使用。
+  AGENT_NOT_READY:
+    delivery: HTTP
+    http_status: 409
+    retryable: true
+    user_message: Hermes尚未就緒，無法提交任務。
+  AGENT_REQUEST_TIMEOUT:
+    delivery: RESOURCE_STATE
+    http_status: null
+    retryable: true
+    user_message: Agent任務執行逾時。
+  AGENT_RESPONSE_INVALID:
+    delivery: RESOURCE_STATE
+    http_status: null
+    retryable: false
+    user_message: Agent回應格式不符合預期，已保存原始輸出供檢查。
+  VALIDATION_ERROR:
+    delivery: HTTP
+    http_status: 422
+    retryable: false
+    user_message: 輸入資料不符合要求。
+  SECURITY_POLICY_VIOLATION:
+    delivery: HTTP
+    http_status: 403
+    retryable: false
+    user_message: 此操作不符合安全政策。
+  INTERNAL_ERROR:
+    delivery: HTTP
+    http_status: 500
+    retryable: false
+    user_message: 系統發生未預期錯誤，請提供Correlation ID給管理者。
+
+response_requirements:
+  required_fields: [error_code, message, correlation_id, retryable]
+  forbidden_fields:
+    - stack_trace
+    - docker_socket_path
+    - secret
+    - token
+    - host_absolute_path
+    - raw_exception
+  delivery_meaning:
+    HTTP: 以ErrorResponse與HTTP狀態直接回傳。
+    RESOURCE_STATE: 非同步操作已接受，錯誤保存於AgentInstance或TaskRun；原POST不回溯改變狀態碼。
+    BOTH: 依錯誤發生在提交前或非同步執行中，可能用兩種方式呈現。

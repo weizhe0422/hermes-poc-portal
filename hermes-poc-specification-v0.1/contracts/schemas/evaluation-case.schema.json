@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/schemas/evaluation-case.schema.json",
+  "$comment": "文件目的：定義版本化測試案例的共同欄位，使案例可追溯Requirement並區分自動與人工判定。",
+  "title": "EvaluationCase",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "case_id",
+    "purpose",
+    "scenario",
+    "requirement_ids",
+    "critical",
+    "input",
+    "expected",
+    "verdict_mode"
+  ],
+  "properties": {
+    "case_id": {"type": "string", "minLength": 1},
+    "purpose": {"type": "string", "minLength": 1},
+    "scenario": {"type": "string", "enum": ["RUNTIME", "CONTROL_WAFER_KNOWLEDGE", "DEPLOYMENT_CHECK", "SECURITY"]},
+    "requirement_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+    "critical": {"type": "boolean"},
+    "preconditions": {"type": "array", "items": {"type": "string"}},
+    "input": {"type": "object"},
+    "expected": {"type": "object"},
+    "forbidden": {"type": "array", "items": {"type": "string"}},
+    "verdict_mode": {"type": "string", "enum": ["AUTOMATED", "MANUAL", "HYBRID"]}
+  }
+}

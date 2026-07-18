@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/schemas/deployment-check-response.schema.json",
+  "$comment": "文件目的：定義系統上線流程檢查的標準化輸出、檢查狀態及禁止行為證據。",
+  "title": "DeploymentCheckResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "overall_status",
+    "checks",
+    "warnings",
+    "prohibited_actions",
+    "missing_information",
+    "next_actions"
+  ],
+  "properties": {
+    "overall_status": {
+      "type": "string",
+      "enum": ["PASS", "FAIL", "HOLD", "NEEDS_INFO"]
+    },
+    "checks": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/check"}
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "prohibited_actions": {"type": "array", "items": {"type": "string"}},
+    "missing_information": {"type": "array", "items": {"type": "string"}},
+    "next_actions": {"type": "array", "items": {"type": "string"}}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"overall_status": {"const": "PASS"}}},
+      "then": {
+        "not": {
+          "properties": {
+            "checks": {
+              "contains": {
+                "properties": {"status": {"enum": ["FAIL", "NEEDS_INFO"]}},
+                "required": ["status"]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"overall_status": {"enum": ["HOLD", "NEEDS_INFO"]}}},
+      "then": {
+        "anyOf": [
+          {"properties": {"missing_information": {"minItems": 1}}},
+          {"properties": {"warnings": {"minItems": 1}}},
+          {"properties": {"prohibited_actions": {"minItems": 1}}}
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "sourceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "title", "version", "section", "source_type"],
+      "properties": {
+        "source_id": {"type": "string"},
+        "title": {"type": "string"},
+        "version": {"type": "string"},
+        "section": {"type": "string"},
+        "source_type": {"type": "string", "enum": ["HTML", "MARKDOWN", "IMAGE", "SKILL", "OTHER"]},
+        "uri": {"type": ["string", "null"]}
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "name", "status", "evidence", "sources"],
+      "properties": {
+        "check_id": {"type": "string", "minLength": 1},
+        "name": {"type": "string", "minLength": 1},
+        "status": {"type": "string", "enum": ["PASS", "FAIL", "NEEDS_INFO", "NOT_APPLICABLE"]},
+        "evidence": {"type": "string"},
+        "sources": {"type": "array", "items": {"$ref": "#/$defs/sourceReference"}}
+      }
+    }
+  }
+}

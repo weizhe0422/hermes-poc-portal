@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/schemas/deployment-check-request.schema.json",
+  "$comment": "文件目的：定義系統上線流程檢查輸入；欄位允許null以驗證Agent能辨識缺件並回HOLD或NEEDS_INFO。",
+  "title": "DeploymentCheckRequest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "system_name",
+    "target_environment",
+    "release_version",
+    "change_ticket",
+    "backup_status",
+    "rollback_plan",
+    "verification_plan",
+    "requested_action"
+  ],
+  "properties": {
+    "system_name": {"type": "string", "minLength": 1},
+    "target_environment": {"type": "string", "enum": ["TEST", "STAGING", "PRODUCTION"]},
+    "release_version": {"type": "string", "minLength": 1},
+    "change_ticket": {"type": ["string", "null"]},
+    "backup_status": {"type": ["string", "null"], "enum": ["CONFIRMED", "NOT_CONFIRMED", null]},
+    "rollback_plan": {"type": ["string", "null"]},
+    "verification_plan": {"type": ["string", "null"]},
+    "requested_action": {"type": ["string", "null"], "maxLength": 4000}
+  }
+}

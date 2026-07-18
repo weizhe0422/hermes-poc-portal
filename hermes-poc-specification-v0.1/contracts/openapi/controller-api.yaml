@@ -1,0 +1,248 @@
+# 文件目的：定義Portal與Controller E2E可使用的Controller內部REST API；Controller不提供任意Docker管理或動態Instance建立功能。
+# 適用角色：Controller實作者、Portal實作者、Controller E2E實作者。
+# 狀態：Draft v0.1。
+
+openapi: 3.1.0
+info:
+  title: Hermes Runtime Controller API
+  version: 0.1.0
+  license:
+    name: Internal PoC - not for redistribution
+  description: >-
+    僅供Docker內部Network使用。所有Lifecycle操作均須驗證Instance Registry、Container Name與Managed Label。
+servers:
+  - url: http://controller:8090
+security: []
+x-security-context: v0.1依賴不發布Host Port與Docker Network隔離；正式多人環境必須新增Service Authentication。
+
+paths:
+  /health/live:
+    get:
+      operationId: controllerLiveness
+      summary: 確認Controller Process存活。
+      responses:
+        "200":
+          description: Controller存活。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /health/ready:
+    get:
+      operationId: controllerReadiness
+      summary: 確認Controller可連到設定的Docker Engine。
+      responses:
+        "200":
+          description: Controller Ready。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/instances:
+    get:
+      operationId: listManagedInstances
+      summary: 列出Registry中且通過Label/Name白名單的Instance。
+      responses:
+        "200":
+          description: 受管Instance清單。
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "../schemas/agent-instance.schema.json"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/instances/{instance_id}:
+    get:
+      operationId: getManagedInstance
+      summary: Inspect受管Instance並執行需要的Health Probe。
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: Instance狀態。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/instances/{instance_id}/start:
+    post:
+      operationId: startManagedInstance
+      summary: 啟動已存在的受管Instance；不建立新Container。
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: 已在目標狀態，冪等No-op。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "202":
+          description: Start接受或既有Start仍進行中。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/instances/{instance_id}/stop:
+    post:
+      operationId: stopManagedInstance
+      summary: 正常停止受管Instance，不刪除Container或Volume。
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "200":
+          description: 已停止，冪等No-op。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "202":
+          description: Stop接受或既有Stop仍進行中。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/instances/{instance_id}/restart:
+    post:
+      operationId: restartManagedInstance
+      summary: 對受管Instance執行Stop後Start，保留Volume。
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+      responses:
+        "202":
+          description: Restart已接受。
+          content:
+            application/json:
+              schema:
+                $ref: "../schemas/agent-instance.schema.json"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /v1/instances/{instance_id}/logs:
+    get:
+      operationId: getManagedInstanceLogs
+      summary: 取得受管Instance最近Log並執行Secret Redaction。
+      parameters:
+        - $ref: "#/components/parameters/InstanceId"
+        - name: tail
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 200
+      responses:
+        "200":
+          description: 遮蔽後Log。
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/LogsResponse"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+components:
+  parameters:
+    InstanceId:
+      name: instance_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+
+  schemas:
+    HealthResponse:
+      type: object
+      additionalProperties: false
+      required: [status, docker_status]
+      properties:
+        status: {type: string, enum: [OK, NOT_READY]}
+        docker_status: {type: string, enum: [AVAILABLE, UNAVAILABLE]}
+    LogsResponse:
+      type: object
+      additionalProperties: false
+      required: [instance_id, lines, redacted]
+      properties:
+        instance_id: {type: string}
+        lines: {type: array, items: {type: string}}
+        redacted: {type: boolean, const: true}
+
+  responses:
+    Forbidden:
+      description: Instance不在Controller管理範圍或違反安全政策。
+      content:
+        application/json:
+          schema:
+            $ref: "../schemas/error-response.schema.json"
+    NotFound:
+      description: Instance不存在。
+      content:
+        application/json:
+          schema:
+            $ref: "../schemas/error-response.schema.json"
+    Conflict:
+      description: Lifecycle狀態或操作衝突。
+      content:
+        application/json:
+          schema:
+            $ref: "../schemas/error-response.schema.json"
+    ServiceUnavailable:
+      description: Docker、Hermes或LLM依賴不可用。
+      content:
+        application/json:
+          schema:
+            $ref: "../schemas/error-response.schema.json"
+
+x-security-rules:
+  dynamic_create_supported: false
+  delete_supported: false
+  arbitrary_command_supported: false
+  arbitrary_image_supported: false
+  arbitrary_volume_supported: false
+  managed_instance_validation:
+    - registry_match
+    - container_name_match
+    - managed_label_match

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/schemas/agent-instance.schema.json",
+  "$comment": "文件目的：定義Portal與Controller交換的Hermes Instance狀態；v0.1雖只有一個Instance，仍強制使用instance_id。",
+  "title": "AgentInstance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "instance_id",
+    "template_id",
+    "state",
+    "container_status",
+    "hermes_status",
+    "llm_status",
+    "versions",
+    "updated_at"
+  ],
+  "properties": {
+    "instance_id": {"type": "string", "minLength": 1},
+    "template_id": {"type": "string", "minLength": 1},
+    "state": {
+      "type": "string",
+      "enum": ["NOT_PROVISIONED", "STOPPED", "STARTING", "HEALTHY", "UNHEALTHY", "STOPPING", "ERROR"]
+    },
+    "container_status": {
+      "type": "string",
+      "enum": ["MISSING", "CREATED", "RUNNING", "EXITED", "PAUSED", "RESTARTING", "UNKNOWN"]
+    },
+    "hermes_status": {
+      "type": "string",
+      "enum": ["UNKNOWN", "UNAVAILABLE", "AVAILABLE", "UNHEALTHY"]
+    },
+    "llm_status": {
+      "type": "string",
+      "enum": ["UNKNOWN", "UNAVAILABLE", "AVAILABLE"]
+    },
+    "operation": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["operation_id", "action", "started_at"],
+      "properties": {
+        "operation_id": {"type": "string"},
+        "action": {"type": "string", "enum": ["START", "STOP", "RESTART"]},
+        "started_at": {"type": "string", "format": "date-time"}
+      }
+    },
+    "last_error_code": {"type": ["string", "null"]},
+    "versions": {"$ref": "component-versions.schema.json"},
+    "updated_at": {"type": "string", "format": "date-time"}
+  }
+}

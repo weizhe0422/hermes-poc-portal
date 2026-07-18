@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/schemas/knowledge-response.schema.json",
+  "$comment": "文件目的：定義控片知識助手的標準化輸出，以便Portal呈現與黑箱測試；領域答案仍須由核准Knowledge與Domain Expert決定。",
+  "title": "KnowledgeResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["status", "answer", "sources", "warnings", "missing_information"],
+  "properties": {
+    "status": {
+      "type": "string",
+      "enum": ["SUPPORTED", "INSUFFICIENT", "CONFLICT"]
+    },
+    "answer": {"type": ["string", "null"]},
+    "sources": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/sourceReference"}
+    },
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "missing_information": {
+      "type": "array",
+      "items": {"type": "string"}
+    }
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "SUPPORTED"}}},
+      "then": {
+        "properties": {
+          "answer": {"type": "string", "minLength": 1},
+          "sources": {"minItems": 1}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "CONFLICT"}}},
+      "then": {"properties": {"sources": {"minItems": 2}}}
+    },
+    {
+      "if": {"properties": {"status": {"const": "INSUFFICIENT"}}},
+      "then": {"properties": {"missing_information": {"minItems": 1}}}
+    }
+  ],
+  "$defs": {
+    "sourceReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_id", "title", "version", "section", "source_type"],
+      "properties": {
+        "source_id": {"type": "string", "minLength": 1},
+        "title": {"type": "string", "minLength": 1},
+        "version": {"type": "string", "minLength": 1},
+        "section": {"type": "string", "minLength": 1},
+        "source_type": {"type": "string", "enum": ["HTML", "MARKDOWN", "IMAGE", "SKILL", "OTHER"]},
+        "uri": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

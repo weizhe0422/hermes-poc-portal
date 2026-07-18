@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/schemas/component-versions.schema.json",
+  "$comment": "文件目的：定義每次Runtime、Task與Evaluation都必須保存的元件版本，以支援結果重現與稽核。此Schema不綁定任何開發平台。",
+  "title": "ComponentVersions",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec_version",
+    "portal_version",
+    "controller_version",
+    "hermes_image",
+    "model_name",
+    "knowledge_version",
+    "skill_version"
+  ],
+  "properties": {
+    "spec_version": {"type": "string", "minLength": 1},
+    "portal_version": {"type": "string", "minLength": 1},
+    "controller_version": {"type": "string", "minLength": 1},
+    "hermes_image": {"type": "string", "minLength": 1},
+    "hermes_version": {"type": ["string", "null"]},
+    "model_name": {"type": "string", "minLength": 1},
+    "model_version": {"type": ["string", "null"]},
+    "knowledge_version": {"type": "string", "minLength": 1},
+    "skill_version": {"type": "string", "minLength": 1},
+    "git_commit": {"type": ["string", "null"]}
+  }
+}
