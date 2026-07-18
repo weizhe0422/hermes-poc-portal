@@ -1,0 +1,20 @@
+# Keep build context minimal (BLD-02) and free of secrets (BLD-05)
+**/.git
+**/.gitignore
+**/__pycache__
+**/*.py[cod]
+**/.venv
+**/venv
+**/.mypy_cache
+**/.ruff_cache
+**/.pytest_cache
+**/.coverage
+**/htmlcov
+**/node_modules
+**/dist
+.env
+.env.*
+!.env.example
+test-results/
+hermes-poc-specification-v0.1/
+**/.DS_Store

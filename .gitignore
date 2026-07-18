@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Node / Frontend
+node_modules/
+portal/frontend/dist/
+*.tsbuildinfo
+
+# Environment - never commit real secrets (docs/04)
+.env
+.env.*
+!.env.example
+
+# Local data
+*.db
+*.sqlite3
+data/
+
+# Test artifacts (BLD-08: written to dedicated volume, ignored in git)
+test-results/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

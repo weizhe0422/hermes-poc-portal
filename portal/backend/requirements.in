@@ -1,0 +1,9 @@
+# Portal backend runtime dependencies（docs/03）
+# 精確版本；requirements.lock 由 python:3.13-slim 容器內 pip freeze 產生。
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+httpx==0.28.1
+sqlalchemy==2.0.36
+alembic==1.14.0
