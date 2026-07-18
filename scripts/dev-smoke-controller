@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# 本機 Controller 冒煙驗證（裁定 #7，2026-07-19 核准）：
+# - 只操作帶 poc.test-run=<run_id> Label 的自建資源；Cleanup 僅刪除同一 Run ID 資源。
+# - 使用 hermes-fixture 模擬 Hermes；不接觸任何開發／正式 Container（docs/04 測試安全）。
+# 開發輔助工具，非 docs/05 標準 Script Contract 成員；黑箱 E2E 由測試實作者另行提供。
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+RUN_ID="smoke-$(date +%s)-$$"
+RUN_LABEL="poc.test-run=${RUN_ID}"
+NET="hermes-smoke-net-${RUN_ID}"
+FIXTURE="hermes-smoke-fixture-${RUN_ID}"
+UNMANAGED="unmanaged-smoke-${RUN_ID}"
+CONTROLLER="controller-smoke-${RUN_ID}"
+INSTANCE="hermes-poc-001"
+
+cleanup() {
+  docker ps -aq --filter "label=${RUN_LABEL}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+  docker network ls -q --filter "label=${RUN_LABEL}" | xargs -r docker network rm >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+jget() { python3 -c "import sys,json;print(json.load(sys.stdin).get('$1'))"; }
+
+fail() { echo "SMOKE FAIL: $1"; exit 1; }
+
+echo "==> run_id=${RUN_ID}"
+docker network create --label "${RUN_LABEL}" "${NET}" >/dev/null
+
+# 受管 Fixture：建立但不啟動（bootstrap 語意）；secret-log 模式供 Redaction 驗證。
+docker create --name "${FIXTURE}" --network "${NET}" --network-alias hermes \
+  --label "${RUN_LABEL}" --label "poc.managed=true" --label "poc.instance-id=${INSTANCE}" \
+  -e FIXTURE_MODE=secret-log \
+  hermes-poc-hermes-fixture:dev >/dev/null
+
+# 未受管 Fixture：執行中、無受管 Label、名稱不符白名單。
+docker run -d --name "${UNMANAGED}" --network "${NET}" --label "${RUN_LABEL}" \
+  hermes-poc-hermes-fixture:dev >/dev/null
+
+# Controller Under Smoke：socket 直掛（方案 A）、Port 只綁 127.0.0.1 暫時供本腳本呼叫。
+docker run -d --name "${CONTROLLER}" --network "${NET}" --label "${RUN_LABEL}" \
+  -v /var/run/docker.sock:/var/run/docker.sock --group-add 0 \
+  -p 127.0.0.1:0:8090 \
+  -e HERMES_BASE_URL=http://hermes:8000 \
+  -e HERMES_HEALTH_PATH=/health \
+  -e HERMES_LLM_BASE_URL=http://hermes:8000/health \
+  -e HERMES_MODEL_NAME=smoke-model \
+  -e KNOWLEDGE_VERSION=smoke-kw -e SKILL_VERSION=smoke-sk \
+  -e HERMES_START_TIMEOUT_SECONDS=60 -e HERMES_STOP_TIMEOUT_SECONDS=15 \
+  -e CONTROLLER_INSTANCE_REGISTRY="[{\"instance_id\":\"${INSTANCE}\"},{\"instance_id\":\"${UNMANAGED}\"}]" \
+  hermes-poc-controller:dev >/dev/null
+
+PORT=$(docker port "${CONTROLLER}" 8090/tcp | head -1 | awk -F: '{print $NF}')
+BASE="http://127.0.0.1:${PORT}"
+
+for _ in $(seq 1 30); do
+  curl -sf "${BASE}/health/live" >/dev/null && break
+  sleep 0.5
+done
+
+echo "==> readiness"
+[[ "$(curl -s "${BASE}/health/ready" | jget docker_status)" == "AVAILABLE" ]] || fail "controller not ready"
+
+echo "==> status: expect STOPPED/CREATED"
+STATUS=$(curl -s "${BASE}/v1/instances/${INSTANCE}")
+[[ "$(echo "${STATUS}" | jget state)" == "STOPPED" ]] || fail "initial state not STOPPED: ${STATUS}"
+[[ "$(echo "${STATUS}" | jget container_status)" == "CREATED" ]] || fail "container_status not CREATED"
+
+echo "==> start: expect 202 then HEALTHY"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/v1/instances/${INSTANCE}/start")
+[[ "${CODE}" == "202" ]] || fail "start http ${CODE}"
+for _ in $(seq 1 60); do
+  STATE=$(curl -s "${BASE}/v1/instances/${INSTANCE}" | jget state)
+  [[ "${STATE}" == "HEALTHY" ]] && break
+  sleep 1
+done
+[[ "${STATE}" == "HEALTHY" ]] || fail "never reached HEALTHY (last=${STATE})"
+
+echo "==> idempotent start: expect 200"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/v1/instances/${INSTANCE}/start")
+[[ "${CODE}" == "200" ]] || fail "idempotent start http ${CODE}"
+
+echo "==> logs: expect redacted, no TEST_SECRET"
+LOGS=$(curl -s "${BASE}/v1/instances/${INSTANCE}/logs?tail=100")
+[[ "$(echo "${LOGS}" | jget redacted)" == "True" ]] || fail "logs not marked redacted"
+echo "${LOGS}" | grep -q "TEST_SECRET_123456" && fail "secret leaked in logs"
+
+echo "==> restart: expect 202 then HEALTHY"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/v1/instances/${INSTANCE}/restart")
+[[ "${CODE}" == "202" ]] || fail "restart http ${CODE}"
+for _ in $(seq 1 90); do
+  STATE=$(curl -s "${BASE}/v1/instances/${INSTANCE}" | jget state)
+  [[ "${STATE}" == "HEALTHY" ]] && break
+  sleep 1
+done
+[[ "${STATE}" == "HEALTHY" ]] || fail "restart never reached HEALTHY (last=${STATE})"
+
+echo "==> stop: expect 202 then STOPPED"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/v1/instances/${INSTANCE}/stop")
+[[ "${CODE}" == "202" ]] || fail "stop http ${CODE}"
+for _ in $(seq 1 30); do
+  STATE=$(curl -s "${BASE}/v1/instances/${INSTANCE}" | jget state)
+  [[ "${STATE}" == "STOPPED" ]] && break
+  sleep 1
+done
+[[ "${STATE}" == "STOPPED" ]] || fail "never reached STOPPED (last=${STATE})"
+
+echo "==> unmanaged: expect 403 and container untouched (RUNTIME-012 語意)"
+CODE=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/v1/instances/${UNMANAGED}/stop")
+[[ "${CODE}" == "403" ]] || fail "unmanaged stop http ${CODE}"
+[[ "$(docker inspect -f '{{.State.Running}}' "${UNMANAGED}")" == "true" ]] || fail "unmanaged container was touched"
+
+echo "==> SMOKE PASS (cleanup only removes label ${RUN_LABEL})"

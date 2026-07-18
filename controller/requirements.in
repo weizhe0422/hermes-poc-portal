@@ -1,0 +1,8 @@
+# Controller runtime dependencies（docs/03：FastAPI、Uvicorn、Pydantic、HTTPX、Docker SDK）
+# 精確版本；requirements.lock 由 python:3.13-slim 容器內 pip freeze 產生。
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+httpx==0.28.1
+docker==7.1.0

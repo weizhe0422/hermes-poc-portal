@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# 標準 Script Contract（docs/05）：執行前後端與 Controller Unit Test。
+# Python 測試在 python:3.13-slim 容器內執行（Host 不需安裝 Python 3.13）；
+# 前端測試優先使用 Host node，否則使用 node:24 容器。
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+REGISTRY_PREFIX="${REGISTRY_PREFIX:-}"
+PYTHON_IMAGE="${REGISTRY_PREFIX}python:3.13-slim"
+NODE_IMAGE="${REGISTRY_PREFIX}node:24-bookworm-slim"
+FAILED=0
+
+# Schema 合規測試需要唯讀掛載規格 contracts/（test_schema_compliance.py）。
+CONTRACTS_DIR_HOST="$(pwd)/hermes-poc-specification-v0.1/contracts"
+
+run_python_tests() {
+  local name="$1" src="$2"
+  echo "==> ${name}: pytest (${PYTHON_IMAGE})"
+  if ! docker run --rm \
+    -v "$(pwd)/${src}:/src:ro" \
+    -v "${CONTRACTS_DIR_HOST}:/contracts:ro" \
+    -e CONTRACTS_DIR=/contracts \
+    -w /tmp/work "${PYTHON_IMAGE}" \
+    bash -c "cp -r /src/. /tmp/work/ && pip install -q -r requirements-dev.lock && python -m pytest tests -q"; then
+    FAILED=1
+  fi
+}
+
+run_python_tests "controller" "controller"
+run_python_tests "portal-backend" "portal/backend"
+
+echo "==> frontend: vitest"
+if command -v npm >/dev/null 2>&1; then
+  (cd portal/frontend && npm ci --silent && npm test) || FAILED=1
+else
+  docker run --rm \
+    -v "$(pwd)/portal/frontend:/src:ro" \
+    -w /tmp/work "${NODE_IMAGE}" \
+    bash -c "cp -r /src/. /tmp/work/ && npm ci --silent && npm test" || FAILED=1
+fi
+
+if [[ "${FAILED}" -ne 0 ]]; then
+  echo "==> unit tests FAILED"
+  exit 20
+fi
+echo "==> all unit tests passed"

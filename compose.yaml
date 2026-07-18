@@ -1,0 +1,105 @@
+# Hermes PoC 部署（docs/02、contracts/environment.yaml）
+#
+# Bootstrap（docs/02 第一次 Bootstrap）：
+#   docker compose up -d portal controller
+#   docker compose create hermes        # 建立但不啟動；Lifecycle 由 Portal→Controller 操作
+#
+# 規則：
+# - Host 只發布 Portal Port（BLD-07）。
+# - Hermes 不設固定 container_name、不發布 Host Port（docs/02 未來多 Instance 擴充）。
+# - Docker Socket 只掛給 Controller（方案 A；docs/04 Docker 控制權）。
+# - Knowledge／Verified Skill 唯讀（NF-02）。
+
+name: hermes-poc
+
+services:
+  portal:
+    image: hermes-poc-portal:dev
+    build:
+      context: ./portal
+    environment:
+      PORTAL_DATABASE_URL: ${PORTAL_DATABASE_URL:-sqlite:////data/portal.db}
+      DEFAULT_INSTANCE_ID: ${DEFAULT_INSTANCE_ID:-hermes-poc-001}
+      CONTROLLER_BASE_URL: ${CONTROLLER_BASE_URL:-http://controller:8090}
+      HERMES_BASE_URL: ${HERMES_BASE_URL:-http://hermes:8000}
+      AGENT_REQUEST_TIMEOUT_SECONDS: ${AGENT_REQUEST_TIMEOUT_SECONDS:-90}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SPEC_VERSION: ${SPEC_VERSION:-0.1.0}
+    ports:
+      - "${PORTAL_PORT:-8080}:8080"
+    volumes:
+      - portal-data:/data
+    networks:
+      - portal-network
+      - agent-network
+      - e2e-network
+    depends_on:
+      - controller
+
+  controller:
+    image: hermes-poc-controller:dev
+    build:
+      context: ./controller
+    environment:
+      DEFAULT_INSTANCE_ID: ${DEFAULT_INSTANCE_ID:-hermes-poc-001}
+      HERMES_BASE_URL: ${HERMES_BASE_URL:-http://hermes:8000}
+      HERMES_HEALTH_PATH: ${HERMES_HEALTH_PATH:-/health}
+      HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:-}
+      HERMES_MODEL_NAME: ${HERMES_MODEL_NAME:-}
+      HERMES_START_TIMEOUT_SECONDS: ${HERMES_START_TIMEOUT_SECONDS:-120}
+      HERMES_STOP_TIMEOUT_SECONDS: ${HERMES_STOP_TIMEOUT_SECONDS:-30}
+      CONTROLLER_MANAGED_LABEL: ${CONTROLLER_MANAGED_LABEL:-poc.managed=true}
+      CONTROLLER_MANAGED_NAME_PATTERN: ${CONTROLLER_MANAGED_NAME_PATTERN:-.*hermes.*}
+      # CA-3/CA-4 裁定新增：versions 欄位來源，部署時注入實際值。
+      HERMES_TEMPLATE_ID: ${HERMES_TEMPLATE_ID:-hermes-poc-template-v1}
+      KNOWLEDGE_VERSION: ${KNOWLEDGE_VERSION:-UNSET}
+      SKILL_VERSION: ${SKILL_VERSION:-UNSET}
+      PORTAL_VERSION: ${PORTAL_VERSION:-0.1.0}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      SPEC_VERSION: ${SPEC_VERSION:-0.1.0}
+    volumes:
+      # 方案 A：socket 只掛給 Controller；應用層以 Registry＋Name/Label 雙白名單限制。
+      # 之後可改為 docker-socket-proxy：移除此掛載並設 DOCKER_HOST 指向 proxy。
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      # Linux Host 需設 DOCKER_GID 為 docker group 的 GID；macOS Docker Desktop 可留預設。
+      - "${DOCKER_GID:-0}"
+    networks:
+      - portal-network
+      - agent-network
+    # Controller Port 不發布到 Host（BLD-07、docs/04）。
+
+  hermes:
+    # OD-01 Blocker：實際核准 Image 未定，必須明確指定，不得假設。
+    # 本機整合驗證可暫用 hermes-poc-hermes-fixture:dev。
+    image: "${HERMES_IMAGE:?set HERMES_IMAGE explicitly (OD-01 unresolved)}"
+    restart: "no"
+    labels:
+      poc.managed: "true"
+      poc.instance-id: "${DEFAULT_INSTANCE_ID:-hermes-poc-001}"
+    environment:
+      HERMES_LLM_BASE_URL: ${HERMES_LLM_BASE_URL:-}
+      HERMES_LLM_API_KEY: ${HERMES_LLM_API_KEY:-}
+      HERMES_MODEL_NAME: ${HERMES_MODEL_NAME:-}
+    volumes:
+      # 掛載目標路徑為暫定值：真實 Hermes Image 內部路徑待 OD-01／OD-02 確認。
+      - hermes-state:/state
+      - knowledge-control-wafer:/knowledge/control-wafer:ro
+      - knowledge-deployment:/knowledge/deployment:ro
+      - verified-skills:/skills:ro
+    networks:
+      - agent-network
+    # 不發布 Host Port；不設 container_name（forbidden_configuration）。
+
+networks:
+  portal-network: {}
+  agent-network: {}
+  # e2e-network 成員：portal 與 portal-e2e-runner（Runner 由測試側 compose 加入）。
+  e2e-network: {}
+
+volumes:
+  portal-data: {}
+  hermes-state: {}
+  knowledge-control-wafer: {}
+  knowledge-deployment: {}
+  verified-skills: {}

@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# 標準 Script Contract（docs/05）：Build 全部 Production 及 Test Image。
+# 平台範圍：portal、controller、hermes-fixture。
+# E2E Image（tests/portal-e2e、tests/controller-e2e）屬測試實作者；Dockerfile 存在時一併 Build。
+set -euo pipefail
+
+cd "$(dirname "$0")/.."
+
+REGISTRY_PREFIX="${REGISTRY_PREFIX:-}"
+TAG="${IMAGE_TAG:-dev}"
+
+build() {
+  local image="$1" context="$2"
+  echo "==> building ${image}:${TAG} (${context})"
+  docker build \
+    --build-arg "REGISTRY_PREFIX=${REGISTRY_PREFIX}" \
+    -t "${image}:${TAG}" \
+    "${context}"
+}
+
+build hermes-poc-portal portal
+build hermes-poc-controller controller
+build hermes-poc-hermes-fixture tests/hermes-fixture
+
+for optional in "hermes-poc-portal-e2e:tests/portal-e2e" "hermes-poc-controller-e2e:tests/controller-e2e"; do
+  image="${optional%%:*}"
+  context="${optional#*:}"
+  if [[ -f "${context}/Dockerfile" ]]; then
+    build "${image}" "${context}"
+  else
+    echo "==> skip ${image} (${context}/Dockerfile not present; owned by test implementer)"
+  fi
+done
+
+echo "==> all images built"
