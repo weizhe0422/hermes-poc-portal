@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.internal/hermes-poc/tests/manifest.schema.json",
+  "title": "HermesTestRunManifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "run_id",
+    "fixture_type",
+    "spec_version",
+    "git_commit",
+    "git_branch",
+    "test_suite",
+    "images",
+    "executed_at"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "pattern": "^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$",
+      "maxLength": 63
+    },
+    "fixture_type": {"const": "SYNTHETIC"},
+    "spec_version": {"const": "0.1.0"},
+    "git_commit": {"type": "string", "minLength": 7},
+    "git_branch": {"type": "string", "minLength": 1},
+    "test_suite": {"type": "string", "enum": ["controller-e2e", "portal-e2e"]},
+    "images": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "executed_at": {"type": "string", "format": "date-time"}
+  }
+}

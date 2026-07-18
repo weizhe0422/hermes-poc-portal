@@ -1,0 +1,169 @@
+#!/bin/sh
+set -eu
+
+phase=${1:?phase is required}
+run_id=${2:?run_id is required}
+runtime_instance_id=${3:-hermes-fixture-001}
+persistent_instance_id=${4:-hermes-fixture-persistent}
+events_since=${5:?Docker event baseline is required}
+persistent_baseline_id=${6:-not-applicable}
+
+case "$phase" in
+  core-start|core-idempotency|persistence) ;;
+  *) echo "invalid phase" >&2; exit 70 ;;
+esac
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9]) echo "invalid run_id" >&2; exit 70 ;;
+esac
+if [ "${#run_id}" -gt 63 ]; then echo "invalid run_id" >&2; exit 70; fi
+for value in "$runtime_instance_id" "$persistent_instance_id" "$events_since" "$persistent_baseline_id"; do
+  case "$value" in
+    *[!A-Za-z0-9_.-]*|'') echo "invalid verification argument" >&2; exit 70 ;;
+  esac
+done
+case "$events_since" in
+  *[!0-9]*) echo "event baseline must be a Unix timestamp" >&2; exit 70 ;;
+esac
+
+expected_names=$(printf '%s\n%s\n' "$runtime_instance_id" "$persistent_instance_id" | LC_ALL=C sort)
+actual_names=$(docker ps -a --format '{{.Names}}' | LC_ALL=C sort)
+actual_csv=$(printf '%s\n' "$actual_names" | paste -sd, -)
+
+exact_container_set=false
+if [ "$actual_names" = "$expected_names" ]; then exact_container_set=true; fi
+
+labels_valid=true
+for instance_id in "$runtime_instance_id" "$persistent_instance_id"; do
+  if ! docker inspect "$instance_id" >/dev/null 2>&1; then
+    labels_valid=false
+    continue
+  fi
+  managed=$(docker inspect --format '{{index .Config.Labels "poc.managed"}}' "$instance_id")
+  labelled_run=$(docker inspect --format '{{index .Config.Labels "poc.test-run"}}' "$instance_id")
+  fixture=$(docker inspect --format '{{index .Config.Labels "poc.fixture"}}' "$instance_id")
+  if [ "$managed" != true ] || [ "$labelled_run" != "$run_id" ] || [ "$fixture" != true ]; then
+    labels_valid=false
+  fi
+done
+
+persistent_marker_present=false
+if docker inspect "$persistent_instance_id" >/dev/null 2>&1; then
+  if docker exec "$persistent_instance_id" /bin/sh -c \
+    'test -n "$FIXTURE_MARKER_VALUE" && test "$(cat "$FIXTURE_MARKER_PATH" 2>/dev/null)" = "$FIXTURE_MARKER_VALUE"'; then
+    persistent_marker_present=true
+  fi
+fi
+
+# Docker accepts integer Unix timestamps as the beginning of a second. Wait
+# until the lifecycle phase's final event is in a completed second so --until
+# cannot truncate a create/stop/start event emitted just before verification.
+sleep 1
+events_until=$(date +%s)
+if [ "$events_until" -le "$events_since" ]; then events_until=$((events_since + 1)); fi
+event_stream=$(docker events \
+  --since "$events_since" \
+  --until "$events_until" \
+  --filter type=container \
+  --filter event=create \
+  --filter event=start \
+  --filter event=stop \
+  --filter event=restart \
+  --filter event=die \
+  --format '{{json .}}')
+printf '%s\n' "$event_stream" >&2
+
+event_count() {
+  event_name=$1
+  container_name=${2:-}
+  if [ -n "$container_name" ]; then
+    docker events \
+      --since "$events_since" \
+      --until "$events_until" \
+      --filter type=container \
+      --filter "event=$event_name" \
+      --filter "container=$container_name" \
+      --format '{{.ID}}' \
+      | awk 'NF { count += 1 } END { print count + 0 }'
+  else
+    docker events \
+      --since "$events_since" \
+      --until "$events_until" \
+      --filter type=container \
+      --filter "event=$event_name" \
+      --format '{{.ID}}' \
+      | awk 'NF { count += 1 } END { print count + 0 }'
+  fi
+}
+
+create_event_count=$(event_count create "")
+no_container_created=false
+if [ "$create_event_count" -eq 0 ]; then no_container_created=true; fi
+
+test_case_id=RUNTIME-006
+requirement_ids='["RT-06"]'
+runtime_running=false
+runtime_start_events=$(event_count start "$runtime_instance_id")
+runtime_stop_events=$(event_count stop "$runtime_instance_id")
+runtime_restart_events=$(event_count restart "$runtime_instance_id")
+if [ "$(docker inspect --format '{{.State.Running}}' "$runtime_instance_id" 2>/dev/null || true)" = true ]; then
+  runtime_running=true
+fi
+stable_container_identity=true
+volume_preserved=true
+restart_start_events=0
+restart_stop_events=0
+restart_events=0
+restart_transition_observed=true
+
+if [ "$phase" = core-start ]; then
+  test_case_id=RUNTIME-003
+  requirement_ids='["RT-03","RT-09"]'
+elif [ "$phase" = persistence ]; then
+  test_case_id=RUNTIME-014
+  requirement_ids='["RT-05","NF-05"]'
+  current_id=$(docker inspect --format '{{.Id}}' "$persistent_instance_id" 2>/dev/null || true)
+  stable_container_identity=false
+  if [ "$current_id" = "$persistent_baseline_id" ]; then stable_container_identity=true; fi
+  expected_volume="hermes-fixture-state-$run_id"
+  mounted_volume=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/state"}}{{.Name}}{{end}}{{end}}' "$persistent_instance_id" 2>/dev/null || true)
+  volume_preserved=false
+  if [ "$mounted_volume" = "$expected_volume" ]; then volume_preserved=true; fi
+  restart_start_events=$(event_count start "$persistent_instance_id")
+  restart_stop_events=$(event_count stop "$persistent_instance_id")
+  restart_events=$(event_count restart "$persistent_instance_id")
+  restart_transition_observed=false
+  if [ "$restart_start_events" -ge 1 ] \
+    && { [ "$restart_stop_events" -ge 1 ] || [ "$restart_events" -ge 1 ]; }; then
+    restart_transition_observed=true
+  fi
+fi
+
+verdict=true
+if [ "$exact_container_set" != true ] \
+  || [ "$labels_valid" != true ] \
+  || [ "$no_container_created" != true ]; then
+  verdict=false
+fi
+if [ "$phase" = core-start ] \
+  && { [ "$runtime_running" != true ] || [ "$runtime_start_events" -lt 1 ]; }; then
+  verdict=false
+fi
+if [ "$phase" = core-idempotency ] \
+  && { [ "$runtime_running" != true ] \
+    || [ "$runtime_start_events" -ne 0 ] \
+    || [ "$runtime_stop_events" -ne 0 ] \
+    || [ "$runtime_restart_events" -ne 0 ]; }; then
+  verdict=false
+fi
+if [ "$phase" = persistence ] \
+  && { [ "$persistent_marker_present" != true ] \
+    || [ "$stable_container_identity" != true ] \
+    || [ "$volume_preserved" != true ] \
+    || [ "$restart_transition_observed" != true ]; }; then
+  verdict=false
+fi
+
+printf '%s\n' \
+  "{\"run_id\":\"$run_id\",\"phase\":\"$phase\",\"test_case_id\":\"$test_case_id\",\"requirement_ids\":$requirement_ids,\"verdict\":$verdict,\"actual_containers\":\"$actual_csv\",\"exact_container_set\":$exact_container_set,\"managed_labels_valid\":$labels_valid,\"container_create_events\":$create_event_count,\"no_container_created_by_controller\":$no_container_created,\"runtime_running\":$runtime_running,\"runtime_start_events\":$runtime_start_events,\"runtime_stop_events\":$runtime_stop_events,\"runtime_restart_events\":$runtime_restart_events,\"persistent_marker_present\":$persistent_marker_present,\"stable_container_identity\":$stable_container_identity,\"volume_preserved\":$volume_preserved,\"restart_start_events\":$restart_start_events,\"restart_stop_events\":$restart_stop_events,\"restart_events\":$restart_events,\"restart_transition_observed\":$restart_transition_observed}"
+
+if [ "$verdict" != true ]; then exit 1; fi

@@ -1,0 +1,386 @@
+#!/bin/sh
+set -eu
+
+mode=run
+keep=false
+for argument in "$@"; do
+  case "$argument" in
+    --build-only) mode=build ;;
+    --keep) keep=true ;;
+    *) echo "usage: scripts/run-controller-e2e [--build-only] [--keep]" >&2; exit 70 ;;
+  esac
+done
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(dirname "$script_dir")
+cd "$repo_root"
+
+branch=$(git branch --show-current)
+if [ "$branch" != "test/t-m0-m1" ]; then
+  echo "refusing to run from branch $branch; expected test/t-m0-m1" >&2
+  exit 70
+fi
+
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  echo "source tree must be clean before an E2E run" >&2
+  exit 70
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker daemon is unavailable" >&2
+  exit 70
+fi
+
+run_id=${RUN_ID:-"$(date -u +%Y%m%dt%H%M%Sz)-$$"}
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
+    echo "RUN_ID must be one lowercase Compose-safe segment" >&2; exit 70 ;;
+esac
+if [ "${#run_id}" -gt 63 ]; then
+  echo "RUN_ID must be at most 63 characters" >&2
+  exit 70
+fi
+
+if [ "${RUNTIME_INSTANCE_ID:-hermes-fixture-001}" != "hermes-fixture-001" ] \
+  || [ "${PERSISTENT_INSTANCE_ID:-hermes-fixture-persistent}" != "hermes-fixture-persistent" ]; then
+  echo "fixture instance IDs are fixed by the approved Bundle cases" >&2
+  exit 70
+fi
+
+results_root=${TEST_RESULTS_ROOT:-"$repo_root/test-results"}
+run_results="$results_root/$run_id"
+if [ -e "$run_results" ]; then
+  echo "refusing to reuse existing run directory: $run_results" >&2
+  exit 70
+fi
+controller_results="$run_results/controller-e2e"
+bootstrap_dir="$run_results/bootstrap"
+mkdir -p "$controller_results/http-traces" "$controller_results/docker-snapshots" "$controller_results/logs" "$run_results/junit" "$bootstrap_dir"
+chmod 0777 "$controller_results"
+
+export RUN_ID="$run_id"
+export TEST_RESULTS_ROOT="$results_root"
+export TEST_RUN_RESULTS_DIR="$run_results"
+export CONTROLLER_IMAGE=${CONTROLLER_IMAGE:-hermes-poc-controller:0.1.0}
+export CONTROLLER_E2E_IMAGE=${CONTROLLER_E2E_IMAGE:-hermes-poc-controller-e2e:0.1.0}
+export HERMES_FIXTURE_IMAGE=${HERMES_FIXTURE_IMAGE:-hermes-poc-hermes-fixture:0.1.0}
+export RUNTIME_INSTANCE_ID=hermes-fixture-001
+CORE_INSTANCE_ID=$RUNTIME_INSTANCE_ID
+export PERSISTENT_INSTANCE_ID=hermes-fixture-persistent
+
+compose="docker compose -f $repo_root/compose.e2e.controller.yaml"
+artifact_initialized=false
+
+write_infrastructure_failure_junit() {
+  failure_status=$1
+  infrastructure_dir="$controller_results/infrastructure"
+  mkdir -p "$infrastructure_dir"
+  cat > "$infrastructure_dir/junit.xml" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="controller-e2e-infrastructure" tests="1" failures="1" errors="0" skipped="0">
+  <testcase classname="controller_e2e.infrastructure" name="controller_environment_orchestration" time="0">
+    <properties>
+      <property name="test_case_id" value="CONTROLLER-ENV-001" />
+      <property name="requirement_ids" value="E2E-03,E2E-04" />
+      <property name="critical" value="false" />
+      <property name="hermes.case_source" value="traceability-matrix-placeholder" />
+      <property name="hermes.coverage_claim" value="none" />
+      <property name="hermes.acceptance_status" value="not-evaluated" />
+      <property name="hermes.golden_status" value="not-applicable" />
+      <property name="hermes.evidence_kind" value="preflight" />
+    </properties>
+    <failure type="E2E_ORCHESTRATION_FAILURE" message="Controller E2E orchestration failed">runner exit status $failure_status</failure>
+  </testcase>
+</testsuite>
+EOF
+}
+
+emergency_cleanup() {
+  failure_status=$?
+  trap - EXIT INT TERM
+  if [ "$artifact_initialized" != true ]; then
+    $compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+    exit "$failure_status"
+  fi
+  cleanup_verified=false
+  compose_down_verified=false
+  if [ "$keep" = true ]; then
+    echo "keeping isolated E2E stack for RUN_ID=$run_id"
+  else
+    if $compose exec -T docker-engine-test /bin/sh /bootstrap/cleanup-controller-e2e-engine \
+      "$run_id" > "$controller_results/docker-snapshots/cleanup.json" \
+      2> "$controller_results/logs/cleanup.log"; then
+      cleanup_verified=true
+    else
+      printf '{"run_id":"%s","cleanup_verified":false}\n' "$run_id" \
+        > "$controller_results/docker-snapshots/cleanup.json"
+    fi
+    if $compose down --volumes --remove-orphans \
+      > "$controller_results/logs/compose-down.log" 2>&1; then
+      compose_down_verified=true
+    fi
+  fi
+  if [ "$keep" = true ]; then
+    printf '{"run_id":"%s","cleanup_verified":false,"reason":"--keep"}\n' "$run_id" \
+      > "$controller_results/docker-snapshots/cleanup.json"
+  fi
+  printf '{"run_id":"%s","compose_down_verified":%s}\n' \
+    "$run_id" "$compose_down_verified" \
+    > "$controller_results/docker-snapshots/outer-cleanup.json"
+
+  if [ "$artifact_initialized" = true ]; then
+    write_infrastructure_failure_junit "$failure_status"
+    source_tree_unchanged=true
+    if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+      source_tree_unchanged=false
+    fi
+    printf '%s\n' \
+      "{\"orchestration_completed\":false,\"runner_passed\":false,\"evidence_collection_verified\":false,\"cleanup_verified\":$cleanup_verified,\"compose_down_verified\":$compose_down_verified,\"source_tree_unchanged\":$source_tree_unchanged,\"exit_code\":$failure_status}" \
+      > "$controller_results/runner-status.json"
+    python3 "$repo_root/scripts/collect-test-results" "$run_id" >/dev/null 2>&1 || true
+  fi
+  exit "$failure_status"
+}
+trap emergency_cleanup EXIT
+trap 'exit 70' INT TERM
+
+echo "building Controller E2E runner and synthetic Hermes fixture"
+if ! docker build \
+  --file tests/hermes-fixture/Dockerfile \
+  --tag "$HERMES_FIXTURE_IMAGE" \
+  --build-arg "PYTHON_IMAGE=${TEST_PYTHON_IMAGE:-python:3.13.5-slim-bookworm}" \
+  --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple}" \
+  tests/hermes-fixture; then
+  exit 10
+fi
+if ! $compose build controller-e2e-runner; then
+  exit 10
+fi
+
+if [ "$mode" = build ]; then
+  echo "test images built successfully"
+  exit 0
+fi
+
+if ! docker image inspect "$CONTROLLER_IMAGE" >/dev/null 2>&1; then
+  echo "Controller image is not available: $CONTROLLER_IMAGE" >&2
+  exit 70
+fi
+
+cat > "$run_results/manifest.yaml" <<EOF
+{
+  "run_id": "$run_id",
+  "fixture_type": "SYNTHETIC",
+  "spec_version": "0.1.0",
+  "git_commit": "$(git rev-parse HEAD)",
+  "git_branch": "$branch",
+  "test_suite": "controller-e2e",
+  "images": {
+    "controller": "$CONTROLLER_IMAGE",
+    "controller_e2e": "$CONTROLLER_E2E_IMAGE",
+    "hermes_fixture": "$HERMES_FIXTURE_IMAGE"
+  },
+  "executed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+artifact_initialized=true
+fixture_tar="$bootstrap_dir/hermes-fixture.tar"
+docker save --output "$fixture_tar" "$HERMES_FIXTURE_IMAGE"
+
+echo "starting isolated Docker Engine"
+$compose up --detach docker-engine-test
+
+attempt=0
+until $compose exec -T docker-engine-test docker info >/dev/null 2>&1; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 60 ]; then
+    echo "isolated Docker Engine did not become ready" >&2
+    exit 70
+  fi
+  sleep 1
+done
+
+$compose cp "$fixture_tar" docker-engine-test:/tmp/hermes-fixture.tar
+$compose exec -T --user root docker-engine-test chmod 0644 /tmp/hermes-fixture.tar
+$compose exec -T docker-engine-test docker load --input /tmp/hermes-fixture.tar >/dev/null
+$compose exec -T docker-engine-test /bin/sh /bootstrap/bootstrap-controller-e2e-engine \
+  "$run_id" "$HERMES_FIXTURE_IMAGE" "$CORE_INSTANCE_ID" "$PERSISTENT_INSTANCE_ID"
+# Advance beyond the second containing bootstrap create events. Docker's Unix
+# --since form starts at the beginning of the supplied second.
+sleep 1
+core_events_since=$($compose exec -T docker-engine-test date +%s | tr -d '\r')
+persistent_baseline_id=$($compose exec -T docker-engine-test docker inspect \
+  --format '{{.Id}}' "$PERSISTENT_INSTANCE_ID" | tr -d '\r')
+
+evidence_status=0
+
+run_phase() {
+  phase=$1
+  phase_instance_id=$2
+  fixture_port=$3
+  selection=$4
+
+  export CONTROLLER_E2E_PHASE="$phase"
+  export RUNTIME_INSTANCE_ID="$phase_instance_id"
+  export HERMES_FIXTURE_PORT="$fixture_port"
+
+  if ! $compose up --detach --force-recreate controller-under-test; then
+    evidence_status=1
+  fi
+  set +e
+  $compose run --rm --no-deps controller-e2e-runner -k "$selection"
+  phase_status=$?
+  set -e
+  if ! $compose logs --no-color controller-under-test \
+    > "$controller_results/logs/controller-$phase.log" 2>&1; then
+    evidence_status=1
+  fi
+  if ! $compose stop controller-under-test >/dev/null 2>&1; then
+    evidence_status=1
+  fi
+  return "$phase_status"
+}
+
+if run_phase core-start "$CORE_INSTANCE_ID" 8000 \
+  "runtime_001 or runtime_003"; then
+  core_start_status=0
+else
+  core_start_status=$?
+fi
+
+core_start_engine_status=0
+$compose exec -T docker-engine-test /bin/sh /bootstrap/verify-controller-e2e-engine \
+  core-start "$run_id" "$CORE_INSTANCE_ID" "$PERSISTENT_INSTANCE_ID" \
+  "$core_events_since" "$persistent_baseline_id" \
+  > "$controller_results/docker-snapshots/invariants-core-start.json" \
+  2> "$controller_results/docker-snapshots/events-core-start.jsonl" || core_start_engine_status=$?
+if ! python3 "$repo_root/scripts/apply-controller-engine-evidence" \
+  "$controller_results/docker-snapshots/invariants-core-start.json" \
+  "$controller_results/core-start/junit.xml"; then
+  evidence_status=1
+fi
+
+# The second Start request gets its own Engine event window. Any stop, restart,
+# or start of the already-healthy fixture makes RUNTIME-006 fail even if the
+# final HTTP representation and container set look unchanged.
+sleep 1
+core_idempotency_events_since=$($compose exec -T docker-engine-test date +%s | tr -d '\r')
+
+if run_phase core-idempotency "$CORE_INSTANCE_ID" 8000 "runtime_006"; then
+  core_idempotency_status=0
+else
+  core_idempotency_status=$?
+fi
+
+core_idempotency_engine_status=0
+$compose exec -T docker-engine-test /bin/sh /bootstrap/verify-controller-e2e-engine \
+  core-idempotency "$run_id" "$CORE_INSTANCE_ID" "$PERSISTENT_INSTANCE_ID" \
+  "$core_idempotency_events_since" "$persistent_baseline_id" \
+  > "$controller_results/docker-snapshots/invariants-core-idempotency.json" \
+  2> "$controller_results/docker-snapshots/events-core-idempotency.jsonl" || core_idempotency_engine_status=$?
+if ! python3 "$repo_root/scripts/apply-controller-engine-evidence" \
+  "$controller_results/docker-snapshots/invariants-core-idempotency.json" \
+  "$controller_results/core-idempotency/junit.xml"; then
+  evidence_status=1
+fi
+
+# Exclude core lifecycle events from the RUNTIME-014 Restart proof.
+sleep 1
+persistence_events_since=$($compose exec -T docker-engine-test date +%s | tr -d '\r')
+
+if run_phase persistence "$PERSISTENT_INSTANCE_ID" 8001 "runtime_014"; then
+  persistence_status=0
+else
+  persistence_status=$?
+fi
+
+persistence_engine_status=0
+$compose exec -T docker-engine-test /bin/sh /bootstrap/verify-controller-e2e-engine \
+  persistence "$run_id" "$CORE_INSTANCE_ID" "$PERSISTENT_INSTANCE_ID" \
+  "$persistence_events_since" "$persistent_baseline_id" \
+  > "$controller_results/docker-snapshots/invariants-persistence.json" \
+  2> "$controller_results/docker-snapshots/events-persistence.jsonl" || persistence_engine_status=$?
+if ! python3 "$repo_root/scripts/apply-controller-engine-evidence" \
+  "$controller_results/docker-snapshots/invariants-persistence.json" \
+  "$controller_results/persistence/junit.xml"; then
+  evidence_status=1
+fi
+
+runner_status=0
+if [ "$core_start_status" -ne 0 ] \
+  || [ "$core_idempotency_status" -ne 0 ] \
+  || [ "$persistence_status" -ne 0 ] \
+  || [ "$core_start_engine_status" -ne 0 ] \
+  || [ "$core_idempotency_engine_status" -ne 0 ] \
+  || [ "$persistence_engine_status" -ne 0 ]; then
+  runner_status=1
+fi
+
+if ! $compose logs --no-color docker-engine-test \
+  > "$controller_results/logs/docker-engine-test.log" 2>&1; then
+  evidence_status=1
+fi
+if ! $compose exec -T docker-engine-test /bin/sh /bootstrap/collect-controller-e2e-engine \
+  "$run_id" "$PERSISTENT_INSTANCE_ID" \
+  > "$controller_results/docker-snapshots/containers.jsonl" \
+  2> "$controller_results/docker-snapshots/persistence.json"; then
+  evidence_status=1
+fi
+
+rm -f "$fixture_tar"
+rmdir "$bootstrap_dir" 2>/dev/null || true
+
+inner_cleanup_verified=false
+compose_down_verified=false
+if [ "$keep" = true ]; then
+  printf '{"run_id":"%s","cleanup_verified":false,"reason":"--keep"}\n' "$run_id" \
+    > "$controller_results/docker-snapshots/cleanup.json"
+  printf '{"run_id":"%s","compose_down_verified":false,"reason":"--keep"}\n' "$run_id" \
+    > "$controller_results/docker-snapshots/outer-cleanup.json"
+else
+  if $compose exec -T docker-engine-test /bin/sh /bootstrap/cleanup-controller-e2e-engine \
+    "$run_id" > "$controller_results/docker-snapshots/cleanup.json" \
+    2> "$controller_results/logs/cleanup.log"; then
+    inner_cleanup_verified=true
+  else
+    printf '{"run_id":"%s","cleanup_verified":false}\n' "$run_id" \
+      > "$controller_results/docker-snapshots/cleanup.json"
+  fi
+  if $compose down --volumes --remove-orphans \
+    > "$controller_results/logs/compose-down.log" 2>&1; then
+    compose_down_verified=true
+    printf '{"run_id":"%s","compose_down_verified":true}\n' "$run_id" \
+      > "$controller_results/docker-snapshots/outer-cleanup.json"
+  else
+    printf '{"run_id":"%s","compose_down_verified":false}\n' "$run_id" \
+      > "$controller_results/docker-snapshots/outer-cleanup.json"
+  fi
+fi
+trap - EXIT INT TERM
+
+runner_passed=true
+if [ "$runner_status" -ne 0 ]; then runner_passed=false; fi
+evidence_collection_verified=true
+if [ "$evidence_status" -ne 0 ]; then evidence_collection_verified=false; fi
+source_tree_unchanged=true
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  source_tree_unchanged=false
+fi
+printf '%s\n' \
+  "{\"orchestration_completed\":true,\"runner_passed\":$runner_passed,\"evidence_collection_verified\":$evidence_collection_verified,\"cleanup_verified\":$inner_cleanup_verified,\"compose_down_verified\":$compose_down_verified,\"source_tree_unchanged\":$source_tree_unchanged,\"core_start_exit_code\":$core_start_status,\"core_idempotency_exit_code\":$core_idempotency_status,\"persistence_exit_code\":$persistence_status,\"core_start_engine_exit_code\":$core_start_engine_status,\"core_idempotency_engine_exit_code\":$core_idempotency_engine_status,\"persistence_engine_exit_code\":$persistence_engine_status}" \
+  > "$controller_results/runner-status.json"
+
+artifact_status=0
+python3 "$repo_root/scripts/collect-test-results" "$run_id" || artifact_status=$?
+
+if [ "$runner_status" -ne 0 ]; then
+  echo "Controller E2E failed; artifacts: $run_results" >&2
+  exit 30
+fi
+
+if [ "$artifact_status" -ne 0 ]; then
+  echo "Artifact validation failed; artifacts: $run_results" >&2
+  exit 80
+fi
+
+echo "Controller E2E passed; artifacts: $run_results"

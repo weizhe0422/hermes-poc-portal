@@ -1,0 +1,192 @@
+#!/bin/sh
+set -eu
+
+mode=run
+for argument in "$@"; do
+  case "$argument" in
+    --build-only) mode=build ;;
+    *) echo "usage: scripts/run-portal-e2e [--build-only]" >&2; exit 70 ;;
+  esac
+done
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(dirname "$script_dir")
+cd "$repo_root"
+
+branch=$(git branch --show-current)
+if [ "$branch" != "test/t-m0-m1" ]; then
+  echo "refusing to run from branch $branch; expected test/t-m0-m1" >&2
+  exit 70
+fi
+
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  echo "source tree must be clean before an E2E run" >&2
+  exit 70
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker daemon is unavailable" >&2
+  exit 70
+fi
+
+run_id=${RUN_ID:-"$(date -u +%Y%m%dt%H%M%Sz)-$$"}
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
+    echo "RUN_ID must be one lowercase Compose-safe segment" >&2; exit 70 ;;
+esac
+if [ "${#run_id}" -gt 63 ]; then
+  echo "RUN_ID must be at most 63 characters" >&2
+  exit 70
+fi
+results_root=${TEST_RESULTS_ROOT:-"$repo_root/test-results"}
+run_results="$results_root/$run_id"
+if [ -e "$run_results" ]; then
+  echo "refusing to reuse existing run directory: $run_results" >&2
+  exit 70
+fi
+mkdir -p "$run_results/portal-e2e"
+chmod 0777 "$run_results/portal-e2e"
+
+export RUN_ID="$run_id"
+export TEST_RESULTS_ROOT="$results_root"
+export TEST_RUN_RESULTS_DIR="$run_results"
+export PORTAL_IMAGE=${PORTAL_IMAGE:-hermes-poc-portal:0.1.0}
+export PORTAL_E2E_IMAGE=${PORTAL_E2E_IMAGE:-hermes-poc-portal-e2e:0.1.0}
+
+compose="docker compose -f $repo_root/compose.e2e.portal.yaml"
+artifact_initialized=false
+
+write_infrastructure_failure_junit() {
+  failure_status=$1
+  infrastructure_dir="$run_results/portal-e2e/infrastructure"
+  mkdir -p "$infrastructure_dir"
+  cat > "$infrastructure_dir/junit.xml" <<EOF
+<?xml version="1.0" encoding="utf-8"?>
+<testsuite name="portal-e2e-infrastructure" tests="1" failures="1" errors="0" skipped="0">
+  <testcase classname="portal_e2e.infrastructure" name="portal_runner_orchestration" time="0">
+    <properties>
+      <property name="test_case_id" value="EXECUTION-001" />
+      <property name="requirement_ids" value="E2E-05" />
+      <property name="critical" value="false" />
+      <property name="hermes.case_source" value="traceability-matrix-placeholder" />
+      <property name="hermes.coverage_claim" value="none" />
+      <property name="hermes.acceptance_status" value="not-evaluated" />
+      <property name="hermes.golden_status" value="not-applicable" />
+      <property name="hermes.evidence_kind" value="preflight" />
+    </properties>
+    <failure type="E2E_ORCHESTRATION_FAILURE" message="Portal E2E orchestration failed">runner exit status $failure_status</failure>
+  </testcase>
+</testsuite>
+EOF
+}
+
+emergency_cleanup() {
+  failure_status=$?
+  trap - EXIT INT TERM
+  if [ "$artifact_initialized" != true ]; then
+    $compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+    exit "$failure_status"
+  fi
+
+  compose_logs_verified=false
+  if $compose logs --no-color > "$run_results/portal-e2e/compose.log" 2>&1; then
+    compose_logs_verified=true
+  fi
+  compose_down_verified=false
+  if $compose down --volumes --remove-orphans \
+    > "$run_results/portal-e2e/compose-down.log" 2>&1; then
+    compose_down_verified=true
+  fi
+  printf '{"run_id":"%s","compose_down_verified":%s}\n' \
+    "$run_id" "$compose_down_verified" \
+    > "$run_results/portal-e2e/cleanup.json"
+  write_infrastructure_failure_junit "$failure_status"
+  source_tree_unchanged=true
+  if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+    source_tree_unchanged=false
+  fi
+  printf '%s\n' \
+    "{\"orchestration_completed\":false,\"runner_passed\":false,\"compose_logs_verified\":$compose_logs_verified,\"cleanup_verified\":$compose_down_verified,\"source_tree_unchanged\":$source_tree_unchanged,\"runner_exit_code\":$failure_status}" \
+    > "$run_results/portal-e2e/runner-status.json"
+  python3 "$repo_root/scripts/collect-test-results" "$run_id" >/dev/null 2>&1 || true
+  exit "$failure_status"
+}
+trap emergency_cleanup EXIT
+trap 'exit 70' INT TERM
+
+if ! $compose build portal-e2e-runner; then
+  exit 10
+fi
+if [ "$mode" = build ]; then
+  echo "Portal E2E runner image built successfully"
+  exit 0
+fi
+
+if ! docker image inspect "$PORTAL_IMAGE" >/dev/null 2>&1; then
+  echo "Portal image is not available: $PORTAL_IMAGE" >&2
+  exit 70
+fi
+
+cat > "$run_results/manifest.yaml" <<EOF
+{
+  "run_id": "$run_id",
+  "fixture_type": "SYNTHETIC",
+  "spec_version": "0.1.0",
+  "git_commit": "$(git rev-parse HEAD)",
+  "git_branch": "$branch",
+  "test_suite": "portal-e2e",
+  "images": {
+    "portal": "$PORTAL_IMAGE",
+    "portal_e2e": "$PORTAL_E2E_IMAGE"
+  },
+  "executed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+artifact_initialized=true
+
+set +e
+$compose up --abort-on-container-exit --exit-code-from portal-e2e-runner \
+  portal-under-test portal-e2e-runner
+runner_status=$?
+set -e
+
+compose_logs_status=0
+if ! $compose logs --no-color > "$run_results/portal-e2e/compose.log" 2>&1; then
+  compose_logs_status=1
+fi
+cleanup_status=0
+if $compose down --volumes --remove-orphans \
+  > "$run_results/portal-e2e/compose-down.log" 2>&1; then
+  printf '{"run_id":"%s","compose_down_verified":true}\n' "$run_id" \
+    > "$run_results/portal-e2e/cleanup.json"
+else
+  printf '{"run_id":"%s","compose_down_verified":false}\n' "$run_id" \
+    > "$run_results/portal-e2e/cleanup.json"
+  cleanup_status=1
+fi
+trap - EXIT INT TERM
+
+runner_passed=true
+if [ "$runner_status" -ne 0 ]; then runner_passed=false; fi
+compose_logs_verified=true
+if [ "$compose_logs_status" -ne 0 ]; then compose_logs_verified=false; fi
+cleanup_verified=true
+if [ "$cleanup_status" -ne 0 ]; then cleanup_verified=false; fi
+source_tree_unchanged=true
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  source_tree_unchanged=false
+fi
+printf '%s\n' \
+  "{\"orchestration_completed\":true,\"runner_passed\":$runner_passed,\"compose_logs_verified\":$compose_logs_verified,\"cleanup_verified\":$cleanup_verified,\"source_tree_unchanged\":$source_tree_unchanged,\"runner_exit_code\":$runner_status}" \
+  > "$run_results/portal-e2e/runner-status.json"
+
+artifact_status=0
+python3 "$repo_root/scripts/collect-test-results" "$run_id" || artifact_status=$?
+if [ "$runner_status" -ne 0 ]; then
+  exit 40
+fi
+if [ "$artifact_status" -ne 0 ]; then
+  exit 80
+fi
+
+echo "Portal E2E scaffold passed; artifacts: $run_results"

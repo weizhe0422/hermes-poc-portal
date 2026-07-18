@@ -1,0 +1,118 @@
+#!/bin/sh
+set -eu
+
+run_id=${1:?run_id is required}
+fixture_image=${2:?fixture image is required}
+runtime_instance_id=${3:-hermes-fixture-001}
+persistent_instance_id=${4:-hermes-fixture-persistent}
+
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
+    echo "invalid run_id" >&2
+    exit 70
+    ;;
+esac
+if [ "${#run_id}" -gt 63 ]; then echo "invalid run_id" >&2; exit 70; fi
+
+managed_label=poc.managed=true
+fixture_network="hermes-fixture-network-$run_id"
+persistent_volume="hermes-fixture-state-$run_id"
+persistent_marker="PERSISTENT_MARKER_$run_id"
+
+existing_containers=$(docker ps -aq --filter "label=poc.test-run=$run_id")
+if [ -n "$existing_containers" ]; then
+  for container_id in $existing_containers; do
+    fixture_label=$(docker inspect --format '{{index .Config.Labels "poc.fixture"}}' "$container_id")
+    if [ "$fixture_label" != true ]; then
+      echo "refusing to remove non-fixture container labelled for $run_id" >&2
+      exit 70
+    fi
+  done
+  docker rm -f $existing_containers >/dev/null
+fi
+
+existing_volumes=$(docker volume ls -q --filter "label=poc.test-run=$run_id")
+if [ -n "$existing_volumes" ]; then
+  for volume_name in $existing_volumes; do
+    fixture_label=$(docker volume inspect --format '{{index .Labels "poc.fixture"}}' "$volume_name")
+    if [ "$fixture_label" != true ]; then
+      echo "refusing to remove non-fixture volume labelled for $run_id" >&2
+      exit 70
+    fi
+  done
+  docker volume rm $existing_volumes >/dev/null
+fi
+
+if docker network inspect "$fixture_network" >/dev/null 2>&1; then
+  network_run=$(docker network inspect --format '{{index .Labels "poc.test-run"}}' "$fixture_network")
+  network_fixture=$(docker network inspect --format '{{index .Labels "poc.fixture"}}' "$fixture_network")
+  if [ "$network_run" != "$run_id" ] || [ "$network_fixture" != true ]; then
+    echo "refusing to remove a foreign network named $fixture_network" >&2
+    exit 70
+  fi
+  docker network rm "$fixture_network" >/dev/null
+fi
+
+if docker volume inspect "$persistent_volume" >/dev/null 2>&1; then
+  echo "refusing to reuse an unverified volume named $persistent_volume" >&2
+  exit 70
+fi
+
+docker network create \
+  --label "poc.test-run=$run_id" \
+  --label poc.fixture=true \
+  "$fixture_network" >/dev/null
+
+docker volume create \
+  --label "poc.test-run=$run_id" \
+  --label poc.fixture=true \
+  "$persistent_volume" >/dev/null
+
+docker create \
+  --name "$runtime_instance_id" \
+  --hostname "$runtime_instance_id" \
+  --label "$managed_label" \
+  --label "poc.test-run=$run_id" \
+  --label poc.fixture=true \
+  --network "$fixture_network" \
+  --publish 8000:8000 \
+  --env FIXTURE_MODE=HEALTHY \
+  --env FIXTURE_INSTANCE_ID="$runtime_instance_id" \
+  --env FIXTURE_RUN_ID="$run_id" \
+  --env FIXTURE_MODEL_NAME=synthetic-fixture-model \
+  --env FIXTURE_CLASSIFICATION=SYNTHETIC_TEST_ONLY \
+  "$fixture_image" >/dev/null
+
+docker create \
+  --name "$persistent_instance_id" \
+  --hostname "$persistent_instance_id" \
+  --label "$managed_label" \
+  --label "poc.test-run=$run_id" \
+  --label poc.fixture=true \
+  --network "$fixture_network" \
+  --publish 8001:8000 \
+  --volume "$persistent_volume:/state" \
+  --env FIXTURE_MODE=PERSISTENT \
+  --env FIXTURE_INSTANCE_ID="$persistent_instance_id" \
+  --env FIXTURE_RUN_ID="$run_id" \
+  --env FIXTURE_MODEL_NAME=synthetic-fixture-model \
+  --env FIXTURE_CLASSIFICATION=SYNTHETIC_TEST_ONLY \
+  --env FIXTURE_MARKER_PATH=/state/persistent-marker \
+  --env FIXTURE_MARKER_VALUE="$persistent_marker" \
+  "$fixture_image" >/dev/null
+
+docker start "$persistent_instance_id" >/dev/null
+
+attempt=0
+until docker exec "$persistent_instance_id" python -c \
+  "import urllib.request; request=urllib.request.Request('http://127.0.0.1:8000/test-only/persistent-marker', method='PUT'); response=urllib.request.urlopen(request, timeout=1); raise SystemExit(0 if response.status == 200 else 1)" \
+  2>/dev/null; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 100 ]; then
+    echo "persistent fixture marker endpoint did not become ready" >&2
+    exit 70
+  fi
+  sleep 0.1
+done
+
+echo "bootstrapped run-scoped fixtures for $run_id"

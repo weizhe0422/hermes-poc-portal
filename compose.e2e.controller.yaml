@@ -1,0 +1,124 @@
+name: hermes-controller-e2e-${RUN_ID:-local}
+
+x-test-labels: &test-labels
+  poc.test-run: ${RUN_ID:-local}
+  poc.test-suite: controller-e2e
+
+services:
+  docker-engine-test:
+    image: ${DOCKER_ENGINE_TEST_IMAGE:-docker:28.0.1-dind-rootless}
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+      DOCKER_HOST: unix:///run/user/1000/docker.sock
+    command:
+      - --host=tcp://0.0.0.0:2375
+      - --host=unix:///run/user/1000/docker.sock
+    labels: *test-labels
+    networks:
+      docker-engine-test-network:
+        aliases: [docker-engine-test]
+    volumes:
+      - docker-engine-data:/home/rootless/.local/share/docker
+      - type: bind
+        source: ./scripts/bootstrap-controller-e2e-engine
+        target: /bootstrap/bootstrap-controller-e2e-engine
+        read_only: true
+      - type: bind
+        source: ./scripts/collect-controller-e2e-engine
+        target: /bootstrap/collect-controller-e2e-engine
+        read_only: true
+      - type: bind
+        source: ./scripts/cleanup-controller-e2e-engine
+        target: /bootstrap/cleanup-controller-e2e-engine
+        read_only: true
+      - type: bind
+        source: ./scripts/verify-controller-e2e-engine
+        target: /bootstrap/verify-controller-e2e-engine
+        read_only: true
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+
+  controller-under-test:
+    image: ${CONTROLLER_IMAGE:-hermes-poc-controller:0.1.0}
+    environment:
+      DOCKER_HOST: tcp://docker-engine-test:2375
+      DEFAULT_INSTANCE_ID: ${RUNTIME_INSTANCE_ID:-hermes-fixture-001}
+      CONTROLLER_MANAGED_LABEL: poc.managed=true
+      HERMES_BASE_URL: http://docker-engine-test:${HERMES_FIXTURE_PORT:-8000}
+      HERMES_HEALTH_PATH: /health
+      HERMES_LLM_BASE_URL: http://docker-engine-test:${HERMES_FIXTURE_PORT:-8000}
+      HERMES_MODEL_NAME: synthetic-fixture-model
+      HERMES_START_TIMEOUT_SECONDS: ${HERMES_START_TIMEOUT_SECONDS:-30}
+      HERMES_STOP_TIMEOUT_SECONDS: ${HERMES_STOP_TIMEOUT_SECONDS:-15}
+      AGENT_REQUEST_TIMEOUT_SECONDS: ${AGENT_REQUEST_TIMEOUT_SECONDS:-10}
+      SPEC_VERSION: 0.1.0
+      LOG_LEVEL: INFO
+    depends_on:
+      docker-engine-test:
+        condition: service_healthy
+    labels: *test-labels
+    networks:
+      controller-e2e-network:
+        aliases: [controller]
+      docker-engine-test-network: {}
+    expose: ["8090"]
+    restart: "no"
+
+  controller-e2e-runner:
+    image: ${CONTROLLER_E2E_IMAGE:-hermes-poc-controller-e2e:0.1.0}
+    build:
+      context: ./tests/controller-e2e
+      dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${TEST_PYTHON_IMAGE:-python:3.13.5-slim-bookworm}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    environment:
+      CONTROLLER_BASE_URL: http://controller:8090
+      SPEC_ROOT: /spec
+      RESULTS_DIR: /test-results/${RUN_ID:-local}/controller-e2e/${CONTROLLER_E2E_PHASE:-core-start}
+      RUN_ID: ${RUN_ID:-local}
+      RUNTIME_INSTANCE_ID: ${RUNTIME_INSTANCE_ID:-hermes-fixture-001}
+      PERSISTENT_INSTANCE_ID: ${PERSISTENT_INSTANCE_ID:-hermes-fixture-persistent}
+      E2E_HTTP_TIMEOUT_SECONDS: ${E2E_HTTP_TIMEOUT_SECONDS:-10}
+      CONTROLLER_READY_TIMEOUT_SECONDS: ${CONTROLLER_READY_TIMEOUT_SECONDS:-60}
+      HERMES_START_TIMEOUT_SECONDS: ${HERMES_START_TIMEOUT_SECONDS:-30}
+      HERMES_STOP_TIMEOUT_SECONDS: ${HERMES_STOP_TIMEOUT_SECONDS:-15}
+      E2E_DEADLINE_GRACE_SECONDS: ${E2E_DEADLINE_GRACE_SECONDS:-5}
+      POLL_INITIAL_INTERVAL_SECONDS: ${POLL_INITIAL_INTERVAL_SECONDS:-0.1}
+      POLL_MAX_INTERVAL_SECONDS: ${POLL_MAX_INTERVAL_SECONDS:-1.0}
+      POLL_BACKOFF_MULTIPLIER: ${POLL_BACKOFF_MULTIPLIER:-1.5}
+    depends_on:
+      controller-under-test:
+        condition: service_started
+    labels: *test-labels
+    networks:
+      - controller-e2e-network
+    volumes:
+      - type: bind
+        source: ./hermes-poc-specification-v0.1
+        target: /spec
+        read_only: true
+      - type: bind
+        source: ${TEST_RUN_RESULTS_DIR:-./test-results/${RUN_ID:-local}}
+        target: /test-results/${RUN_ID:-local}
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+networks:
+  controller-e2e-network:
+    internal: true
+    labels: *test-labels
+  docker-engine-test-network:
+    internal: true
+    labels: *test-labels
+
+volumes:
+  docker-engine-data:
+    labels: *test-labels

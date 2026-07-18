@@ -1,0 +1,161 @@
+# Test-owned implementation map. This file does not define or change Expected Results.
+schema_version: 0.1.0
+spec_version: 0.1.0
+scope: [T-M0, T-M1]
+interpretation:
+  matrix_placeholder_acceptance_claim: NONE
+  note: Passing T-M0 placeholder checks proves Runner infrastructure only; it does not prove platform or Golden Case acceptance.
+
+infrastructure_components:
+  - test_case_id: BUILD-001..006
+    requirement_ids: [BLD-01, BLD-02, BLD-03, BLD-04, BLD-05, BLD-06]
+    source: TRACEABILITY_MATRIX_PLACEHOLDER
+    implementation: Three test Dockerfiles and dependency locks only
+    assertion_source: docs/01-system-requirements.md and docs/03-tech-stack.md
+    acceptance_status: NOT_EVALUATED
+    coverage_claim: NONE
+    limitation: Production images, image-history scan, digest freeze, and closed-network build acceptance are outside this test-owned evidence.
+  - test_case_id: ARTIFACT-001
+    requirement_ids: [BLD-08]
+    source: TRACEABILITY_MATRIX_PLACEHOLDER
+    implementation: scripts/collect-test-results
+    assertion_source: docs/05-build-and-test-guide.md
+    acceptance_status: NOT_EVALUATED
+    coverage_claim: NONE
+  - test_case_id: CONTROLLER-ENV-001
+    requirement_ids: [E2E-03, E2E-04]
+    source: TRACEABILITY_MATRIX_PLACEHOLDER
+    implementation: compose.e2e.controller.yaml
+    assertion_source: contracts/environment.yaml
+    acceptance_status: NOT_EVALUATED
+    coverage_claim: NONE
+    limitation: Readiness is a session preflight, not a standalone approved JUnit case.
+  - test_case_id: SECURITY-001..003
+    requirement_ids: [BLD-07, E2E-01, E2E-02]
+    source: TRACEABILITY_MATRIX_PLACEHOLDER
+    implementation: compose.e2e.portal.yaml and runner network preflight
+    assertion_source: contracts/environment.yaml
+    acceptance_status: NOT_EVALUATED
+    coverage_claim: NONE
+    limitation: SECURITY-001 proves the Runner can reach Portal; BLD-07 host-port exclusivity is not accepted here.
+  - test_case_id: EXECUTION-001..004
+    requirement_ids: [E2E-05, E2E-06, E2E-07, E2E-08]
+    source: TRACEABILITY_MATRIX_PLACEHOLDER
+    implementation: Runner entrypoints and artifact collection
+    assertion_source: docs/05-build-and-test-guide.md
+    acceptance_status: NOT_EVALUATED
+    coverage_claim: NONE
+    limitation: EXECUTION-004 remains skipped until an actual orchestrated clean-tree run.
+
+implemented_bundle_cases:
+  - test_case_id: RUNTIME-001
+    requirement_ids: [RT-01, RT-02]
+    source: test-cases/runtime/cases.yaml
+    implementation: tests/controller-e2e
+    requirement_coverage: PARTIAL
+    limitation: Controller status only; Portal display remains T-M3.
+  - test_case_id: RUNTIME-003
+    requirement_ids: [RT-03, RT-09]
+    source: test-cases/runtime/cases.yaml
+    implementation: tests/controller-e2e plus isolated-engine running-state and start-event evidence
+    requirement_coverage: PARTIAL
+    limitation: Controller lifecycle and reported health only; Portal operator path remains T-M3, and OD-03 does not freeze an independently observable LLM probe protocol.
+  - test_case_id: RUNTIME-006
+    requirement_ids: [RT-06]
+    source: test-cases/runtime/cases.yaml
+    implementation: tests/controller-e2e plus an independent isolated-engine window requiring zero create/start/stop/restart events and an unchanged exact container set
+    requirement_coverage: PARTIAL
+    limitation: Start idempotency only; Stop/Restart idempotency lack Bundle Expected Results.
+  - test_case_id: RUNTIME-014
+    requirement_ids: [RT-05, NF-05]
+    source: test-cases/runtime/cases.yaml
+    implementation: tests/controller-e2e plus persistent-marker-gated fixture
+    condition: Controller registry can address hermes-fixture-persistent
+    requirement_coverage: PARTIAL
+    limitation: Proves the Hermes Fixture volume marker across an observed Stop/Start; Portal records are not covered.
+
+requirement_coverage_gaps:
+  - requirement_ids: [BLD-01, BLD-02]
+    classification: COVERAGE_GAP
+    detail: Platform-owned production image composition is not testable in this worktree.
+  - requirement_ids: [BLD-05]
+    classification: COVERAGE_GAP
+    detail: Production/test image-history secret acceptance is not defined; artifact scan covers exact bytes and ZIP members but does not OCR rendered screenshot/video content.
+  - requirement_ids: [BLD-06]
+    classification: COVERAGE_GAP
+    detail: Mirror overrides are supported, but a fully closed-network build has not been executed.
+  - requirement_ids: [BLD-07]
+    classification: COVERAGE_GAP
+    detail: Runner network isolation is checked; Host public-port exclusivity requires the full platform Compose.
+  - requirement_ids: [E2E-05, E2E-06]
+    classification: COVERAGE_GAP
+    detail: Runner mechanisms exist, but an approved negative failure/evidence acceptance case is absent.
+  - requirement_ids: [E2E-08]
+    classification: COVERAGE_GAP
+    detail: EXECUTION-004 is intentionally skipped until a clean-tree orchestrated product run.
+  - requirement_ids: [RT-01, RT-03, RT-05]
+    classification: COVERAGE_GAP
+    detail: T-M1 covers Controller-facing case slices; Portal user-visible slices are T-M3.
+  - requirement_ids: [RT-09]
+    classification: COVERAGE_GAP
+    detail: AgentInstance LLM availability is asserted, but independent endpoint-invocation evidence cannot be frozen until OD-03 selects the approved LLM probe protocol.
+  - requirement_ids: [NF-05]
+    classification: COVERAGE_GAP
+    detail: RUNTIME-014 covers a Hermes Fixture volume marker, not Portal record persistence.
+
+not_implemented_missing_golden_case:
+  - test_case_id: RUNTIME-002
+    requirement_ids: [RT-01, RT-02]
+    classification: COVERAGE_GAP
+  - test_case_id: RUNTIME-004
+    requirement_ids: [RT-04]
+    classification: COVERAGE_GAP
+  - test_case_id: RUNTIME-005
+    requirement_ids: [RT-05]
+    classification: COVERAGE_GAP
+  - test_case_id: RUNTIME-007
+    requirement_ids: [RT-06]
+    classification: COVERAGE_GAP
+  - test_case_id: RUNTIME-010
+    requirement_ids: [RT-09]
+    classification: COVERAGE_GAP
+  - test_case_id: RUNTIME-011
+    requirement_ids: [RT-09]
+    classification: COVERAGE_GAP
+  - test_case_id: RUNTIME-015
+    requirement_ids: [RT-10, RT-11]
+    classification: COVERAGE_GAP
+  - test_case_id: RUNTIME-016
+    requirement_ids: [RT-12]
+    classification: COVERAGE_GAP
+
+contract_ambiguities:
+  - requirement_ids: []
+    topic: Contract freeze status
+    detail: Work packet states Contracts are frozen, while Requirements, OpenAPI, state machine, and runtime cases are each labelled Draft v0.1.
+  - requirement_ids: [RT-06]
+    topic: Restart idempotency
+    detail: Runtime state machine defines Start/Stop idempotency but no Restart idempotent response.
+  - requirement_ids: [RT-01, RT-02]
+    topic: Instance Registry configuration
+    detail: Bundle freezes DEFAULT_INSTANCE_ID but not a multi-instance registry file/schema; RUNTIME-014 therefore runs in a separate Controller phase.
+  - requirement_ids: [RT-09]
+    topic: LLM probe protocol
+    detail: OD-03 remains open; Fixture exposes deterministic health, models, and chat probes, but the Contract does not freeze which request Controller must use.
+  - requirement_ids: [RT-05, NF-05]
+    topic: Persistence evidence scope
+    detail: RUNTIME-014 Expected Result is a Fixture marker, narrower than NF-05 Portal-and-Hermes record persistence, and AgentInstance has no lifecycle operation evidence field.
+
+deferred:
+  - test_case_id: RUNTIME-008
+    milestone: T-M2
+  - test_case_id: RUNTIME-009
+    milestone: T-M2
+  - test_case_id: RUNTIME-012
+    milestone: T-M2
+  - test_case_id: RUNTIME-013
+    milestone: T-M2
+  - test_case_id: CW-001..005
+    milestone: T-M4
+  - test_case_id: DEPLOY-001..005
+    milestone: T-M4

@@ -1,0 +1,76 @@
+name: hermes-portal-e2e-${RUN_ID:-local}
+
+x-test-labels: &test-labels
+  poc.test-run: ${RUN_ID:-local}
+  poc.test-suite: portal-e2e
+
+services:
+  portal-under-test:
+    image: ${PORTAL_IMAGE:-hermes-poc-portal:0.1.0}
+    environment:
+      PORTAL_PORT: "8080"
+      PORTAL_DATABASE_URL: sqlite:////data/portal.db
+      DEFAULT_INSTANCE_ID: hermes-fixture-001
+      CONTROLLER_BASE_URL: http://controller:8090
+      HERMES_BASE_URL: http://hermes:8000
+      HERMES_HEALTH_PATH: /health
+      HERMES_LLM_BASE_URL: http://hermes:8000
+      HERMES_MODEL_NAME: synthetic-fixture-model
+      HERMES_START_TIMEOUT_SECONDS: "30"
+      HERMES_STOP_TIMEOUT_SECONDS: "15"
+      AGENT_REQUEST_TIMEOUT_SECONDS: "10"
+      CONTROLLER_MANAGED_LABEL: poc.managed=true
+      LOG_LEVEL: INFO
+      SPEC_VERSION: 0.1.0
+    labels: *test-labels
+    networks:
+      e2e-network:
+        aliases: [portal]
+    expose: ["8080"]
+    volumes:
+      - portal-data:/data
+    restart: "no"
+
+  portal-e2e-runner:
+    image: ${PORTAL_E2E_IMAGE:-hermes-poc-portal-e2e:0.1.0}
+    build:
+      context: ./tests/portal-e2e
+      dockerfile: Dockerfile
+      args:
+        PLAYWRIGHT_IMAGE: ${PLAYWRIGHT_IMAGE:-mcr.microsoft.com/playwright:v1.61.0-noble}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    environment:
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://portal:8080}
+      CONTROLLER_BASE_URL: http://controller:8090
+      HERMES_BASE_URL: http://hermes:8000
+      RESULTS_DIR: /test-results/${RUN_ID:-local}/portal-e2e
+      RUN_ID: ${RUN_ID:-local}
+      SPEC_ROOT: /spec
+      PORTAL_READY_TIMEOUT_MS: ${PORTAL_READY_TIMEOUT_MS:-60000}
+    depends_on:
+      portal-under-test:
+        condition: service_started
+    labels: *test-labels
+    networks:
+      - e2e-network
+    volumes:
+      - type: bind
+        source: ./hermes-poc-specification-v0.1
+        target: /spec
+        read_only: true
+      - type: bind
+        source: ${TEST_RUN_RESULTS_DIR:-./test-results/${RUN_ID:-local}}
+        target: /test-results/${RUN_ID:-local}
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+networks:
+  e2e-network:
+    internal: true
+    labels: *test-labels
+
+volumes:
+  portal-data:
+    labels: *test-labels
