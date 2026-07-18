@@ -11,11 +11,16 @@ PYTHON_IMAGE="${REGISTRY_PREFIX}python:3.13-slim"
 NODE_IMAGE="${REGISTRY_PREFIX}node:24-bookworm-slim"
 FAILED=0
 
+# Schema 合規測試需要唯讀掛載規格 contracts/（test_schema_compliance.py）。
+CONTRACTS_DIR_HOST="$(pwd)/hermes-poc-specification-v0.1/contracts"
+
 run_python_tests() {
   local name="$1" src="$2"
   echo "==> ${name}: pytest (${PYTHON_IMAGE})"
   if ! docker run --rm \
     -v "$(pwd)/${src}:/src:ro" \
+    -v "${CONTRACTS_DIR_HOST}:/contracts:ro" \
+    -e CONTRACTS_DIR=/contracts \
     -w /tmp/work "${PYTHON_IMAGE}" \
     bash -c "cp -r /src/. /tmp/work/ && pip install -q -r requirements-dev.lock && python -m pytest tests -q"; then
     FAILED=1
