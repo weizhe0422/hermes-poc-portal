@@ -1,9 +1,15 @@
-"""Runtime 狀態機（contracts/state-machines/hermes-runtime.yaml v0.1.0）。
+"""Runtime 狀態機（contracts/state-machines/hermes-runtime.yaml，Frozen v0.2.0）。
 
-逐條對應 contract 的 states、idempotent_requests 與 invalid_requests 表。
-CA-1 裁定（2026-07-19 需求負責人核准）：
+決策分兩層，逐條對應 contract：
+- decide_in_flight：操作進行中，依 contextual_idempotency_rules 以「action 比對」判定——
+  同型操作 → 202 EXISTING_OPERATION（沿用同一 operation_id）；
+  不同操作 → 409 OPERATION_CONFLICT（invalid_requests 的 condition:
+  requested_action != current_operation_action）。
+- decide_idle：無操作進行中，依 transitions／idempotency_rules／invalid_requests 表。
+
+CA-1 裁定（2026-07-19 需求負責人核准；v0.2.0 對此兩格仍未定義，裁定續行）：
 - UNHEALTHY + START → 200 冪等 No-op（Container 已 Running）。
-- ERROR + START → 409 INVALID_STATE_TRANSITION（ERROR 僅允許 STOP／RESTART）。
+- ERROR + START → 409 INVALID_STATE_TRANSITION（終態不允許的操作）。
 """
 
 from dataclasses import dataclass
@@ -29,7 +35,7 @@ class Action(StrEnum):
 class DecisionKind(StrEnum):
     ACCEPT = "ACCEPT"  # 202：開始新操作
     NOOP = "NOOP"  # 200：冪等 No-op，已在目標狀態
-    EXISTING = "EXISTING"  # 202：同型操作已在進行
+    EXISTING = "EXISTING"  # 202：同型操作已在進行，沿用 operation_id
     REJECT = "REJECT"  # 4xx：不允許
 
 
@@ -47,36 +53,48 @@ _CONFLICT = Decision(DecisionKind.REJECT, 409, "OPERATION_CONFLICT")
 _INVALID = Decision(DecisionKind.REJECT, 409, "INVALID_STATE_TRANSITION")
 _NOT_FOUND = Decision(DecisionKind.REJECT, 404, "INSTANCE_NOT_FOUND")
 
-_TABLE: dict[tuple[RuntimeState, Action], Decision] = {
+# 無操作進行中的決策表；STARTING/STOPPING 只在操作進行中出現，屬 decide_in_flight 範圍。
+IDLE_STATES = (
+    RuntimeState.NOT_PROVISIONED,
+    RuntimeState.STOPPED,
+    RuntimeState.HEALTHY,
+    RuntimeState.UNHEALTHY,
+    RuntimeState.ERROR,
+)
+
+_IDLE_TABLE: dict[tuple[RuntimeState, Action], Decision] = {
     # START
-    (RuntimeState.STOPPED, Action.START): _ACCEPT,
-    (RuntimeState.HEALTHY, Action.START): _NOOP,
+    (RuntimeState.STOPPED, Action.START): _ACCEPT,  # transitions: STOPPED+START→STARTING(202)
+    (RuntimeState.HEALTHY, Action.START): _NOOP,  # idempotency: NO_OP_ALREADY_STARTED
     (RuntimeState.UNHEALTHY, Action.START): _NOOP,  # CA-1
-    (RuntimeState.STARTING, Action.START): _EXISTING,
-    (RuntimeState.STOPPING, Action.START): _CONFLICT,
     (RuntimeState.ERROR, Action.START): _INVALID,  # CA-1
     # STOP
     (RuntimeState.HEALTHY, Action.STOP): _ACCEPT,
     (RuntimeState.UNHEALTHY, Action.STOP): _ACCEPT,
     (RuntimeState.ERROR, Action.STOP): _ACCEPT,
-    (RuntimeState.STOPPED, Action.STOP): _NOOP,
-    (RuntimeState.STOPPING, Action.STOP): _EXISTING,
-    (RuntimeState.STARTING, Action.STOP): _CONFLICT,
+    (RuntimeState.STOPPED, Action.STOP): _NOOP,  # idempotency: NO_OP_ALREADY_STOPPED
     # RESTART
     (RuntimeState.HEALTHY, Action.RESTART): _ACCEPT,
     (RuntimeState.UNHEALTHY, Action.RESTART): _ACCEPT,
     (RuntimeState.ERROR, Action.RESTART): _ACCEPT,
-    (RuntimeState.STOPPED, Action.RESTART): _INVALID,
-    (RuntimeState.STARTING, Action.RESTART): _CONFLICT,
-    (RuntimeState.STOPPING, Action.RESTART): _CONFLICT,
+    (RuntimeState.STOPPED, Action.RESTART): _INVALID,  # invalid_requests
 }
 
 
-def decide(state: RuntimeState, action: Action) -> Decision:
-    """依 contract 表決定生命週期要求的處理方式。"""
+def decide_idle(state: RuntimeState, action: Action) -> Decision:
+    """無操作進行中時，依 contract 表決定生命週期要求的處理方式。"""
     if state == RuntimeState.NOT_PROVISIONED:
         return _NOT_FOUND
-    return _TABLE[(state, action)]
+    if state not in IDLE_STATES:
+        raise ValueError(f"decide_idle called with in-flight state {state}")
+    return _IDLE_TABLE[(state, action)]
+
+
+def decide_in_flight(current_operation_action: Action, requested_action: Action) -> Decision:
+    """操作進行中：contextual_idempotency_rules（同型 202）與 condition 化的 409。"""
+    if requested_action == current_operation_action:
+        return _EXISTING
+    return _CONFLICT
 
 
 # Docker container status -> AgentInstance.container_status enum
