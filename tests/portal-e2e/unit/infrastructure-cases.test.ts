@@ -31,7 +31,7 @@ test('frozen case metadata is sourced exactly from infrastructure cases.yaml', a
   ) as { cases: Array<Record<string, unknown>>; suite_id: string };
 
   assert.equal(catalog.suiteId, source.suite_id);
-  assert.equal(catalog.contractVersion, '0.2.0');
+  assert.equal(catalog.contractVersion, '0.2.1');
 
   for (const caseId of FROZEN_INFRASTRUCTURE_CASE_IDS) {
     const raw = source.cases.find((candidate) => candidate.case_id === caseId);

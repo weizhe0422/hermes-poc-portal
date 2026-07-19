@@ -14,7 +14,7 @@ from jsonschema import Draft202012Validator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COLLECTOR = REPO_ROOT / "scripts" / "collect-test-results"
-FROZEN_CONTRACT_COMMIT = "0ec5667c86522ef0b96e783c9db5912af3413e93"
+FROZEN_CONTRACT_COMMIT = "febdea906a51bab59e582755c495ed2253fb64b8"
 
 
 def _write_junit(
@@ -29,9 +29,9 @@ def _write_junit(
         "run_id": run_root.name,
         "fixture_type": "SYNTHETIC",
         "spec_version": "0.1.0",
-        "contract_tag": "contract-m0-m1-v0.2.0",
+        "contract_tag": "contract-m0-m1-v0.2.1",
         "contract_commit": FROZEN_CONTRACT_COMMIT,
-        "contract_version": "0.2.0",
+        "contract_version": "0.2.1",
         "git_commit": "0123456789abcdef0123456789abcdef01234567",
         "git_branch": "test/t-m0-m1",
         "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
@@ -90,7 +90,7 @@ def _write_junit(
         json.dumps(
             {
                 "schema_version": "0.2.0",
-                "contract_tag": "contract-m0-m1-v0.2.0",
+                "contract_tag": "contract-m0-m1-v0.2.1",
                 "case": {
                     "test_case_id": "CONTROLLER-ENV-001",
                     "is_independent_container": True,
@@ -173,7 +173,7 @@ def _write_junit(
       <property name="hermes.case_source" value="{case_source}" />
       <property name="hermes.coverage_claim" value="case-level" />
       <property name="hermes.acceptance_status" value="case-evaluated" />
-      <property name="hermes.golden_status" value="frozen-v0.2.0" />
+      <property name="hermes.golden_status" value="frozen-v0.2.1" />
       <property name="hermes.evidence_kind" value="{evidence_kind}" />
       {engine_property}
       {outer_property}
@@ -251,9 +251,9 @@ def _write_portal_junit(run_root: Path) -> None:
         "run_id": run_root.name,
         "fixture_type": "SYNTHETIC",
         "spec_version": "0.1.0",
-        "contract_tag": "contract-m0-m1-v0.2.0",
+        "contract_tag": "contract-m0-m1-v0.2.1",
         "contract_commit": FROZEN_CONTRACT_COMMIT,
-        "contract_version": "0.2.0",
+        "contract_version": "0.2.1",
         "git_commit": "0123456789abcdef0123456789abcdef01234567",
         "git_branch": "test/t-m0-m1",
         "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
@@ -341,7 +341,7 @@ def _write_portal_junit(run_root: Path) -> None:
       <property name="hermes.case_source" value="frozen-infrastructure-case" />
       <property name="hermes.coverage_claim" value="case-level" />
       <property name="hermes.acceptance_status" value="case-evaluated" />
-      <property name="hermes.golden_status" value="frozen-v0.2.0" />
+      <property name="hermes.golden_status" value="frozen-v0.2.1" />
       <property name="hermes.evidence_kind" value="{evidence_kind}" />
       {outer_property}
     </properties>
@@ -376,7 +376,7 @@ def _write_portal_junit(run_root: Path) -> None:
         json.dumps(
             {
                 "schema_version": "0.2.0",
-                "contract_tag": "contract-m0-m1-v0.2.0",
+                "contract_tag": "contract-m0-m1-v0.2.1",
                 "cases": {
                     "SECURITY-001": {
                         "portal_running": True,
@@ -803,7 +803,7 @@ def test_master_junit_marks_outer_evidence_validation_failures(
     assert security_001.find("failure") is not None
 
 
-def test_master_collector_preserves_contract_blocked_as_a_distinct_outcome(
+def test_master_collector_preserves_explicit_contract_blocked_as_a_distinct_outcome(
     tmp_path: Path,
 ) -> None:
     infrastructure_root = tmp_path / "infra-contract-child"
@@ -812,16 +812,16 @@ def test_master_collector_preserves_contract_blocked_as_a_distinct_outcome(
     _write_junit(runtime_root)
     runtime_junit = runtime_root / "junit/controller.xml"
     tree = ET.parse(runtime_junit)
-    runtime_009 = next(
+    blocked_case = next(
         testcase
         for testcase in tree.getroot().iter("testcase")
         if any(
             prop.get("name") == "test_case_id"
-            and prop.get("value") == "RUNTIME-009"
+            and prop.get("value") == "RUNTIME-001"
             for prop in testcase.findall("./properties/property")
         )
     )
-    properties = runtime_009.find("properties")
+    properties = blocked_case.find("properties")
     assert properties is not None
     ET.SubElement(
         properties,
@@ -829,7 +829,7 @@ def test_master_collector_preserves_contract_blocked_as_a_distinct_outcome(
         name="failure_classification",
         value="BLOCKED_BY_CONTRACT",
     )
-    ET.SubElement(runtime_009, "failure", message="Frozen mapping is unpublished")
+    ET.SubElement(blocked_case, "failure", message="Synthetic Contract ambiguity")
     tree.write(runtime_junit, encoding="utf-8", xml_declaration=True)
     runner_status_path = runtime_root / "controller-e2e/runner-status.json"
     runner_status = json.loads(runner_status_path.read_text(encoding="utf-8"))
@@ -860,9 +860,9 @@ def test_master_collector_preserves_contract_blocked_as_a_distinct_outcome(
     }
     case_ids = [case["test_case_id"] for case in summary["cases"]]
     assert len(case_ids) == len(set(case_ids)) == 31
-    assert summary["critical_not_passed"] == ["RUNTIME-009"]
+    assert summary["critical_not_passed"] == ["RUNTIME-001"]
     assert next(
-        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-009"
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-001"
     )["status"] == "BLOCKED_BY_CONTRACT"
 
 
@@ -878,7 +878,7 @@ def test_collector_fails_when_critical_case_is_skipped(tmp_path: Path) -> None:
     assert summary["critical_not_passed"] == ["RUNTIME-001"]
 
 
-def test_collector_classifies_frozen_contract_ambiguity_without_platform_failure(
+def test_collector_classifies_explicit_contract_ambiguity_without_platform_failure(
     tmp_path: Path,
 ) -> None:
     run_root = tmp_path / "run-contract-blocked"
@@ -890,7 +890,7 @@ def test_collector_classifies_frozen_contract_ambiguity_without_platform_failure
         for testcase in tree.getroot().iter("testcase")
         if any(
             prop.get("name") == "test_case_id"
-            and prop.get("value") == "RUNTIME-009"
+            and prop.get("value") == "RUNTIME-001"
             for prop in testcase.findall("./properties/property")
         )
     )
@@ -905,7 +905,7 @@ def test_collector_classifies_frozen_contract_ambiguity_without_platform_failure
     ET.SubElement(
         target,
         "failure",
-        message="Frozen error_code has no published AgentInstance mapping",
+        message="Synthetic Contract ambiguity",
     )
     tree.write(junit_path, encoding="utf-8", xml_declaration=True)
     runner_status_path = run_root / "controller-e2e/runner-status.json"
@@ -921,12 +921,12 @@ def test_collector_classifies_frozen_contract_ambiguity_without_platform_failure
     assert summary["counts"]["passed"] == 12
     assert summary["counts"]["failed"] == 0
     assert summary["counts"]["blocked_by_contract"] == 1
-    assert summary["critical_not_passed"] == ["RUNTIME-009"]
-    runtime_009 = next(
-        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-009"
+    assert summary["critical_not_passed"] == ["RUNTIME-001"]
+    blocked_case = next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-001"
     )
-    assert runtime_009["status"] == "BLOCKED_BY_CONTRACT"
-    assert runtime_009["failure_classification"] == "BLOCKED_BY_CONTRACT"
+    assert blocked_case["status"] == "BLOCKED_BY_CONTRACT"
+    assert blocked_case["failure_classification"] == "BLOCKED_BY_CONTRACT"
 
 
 def test_collector_allows_empty_no_lifecycle_engine_event_windows(
@@ -1028,7 +1028,7 @@ def test_collector_requires_frozen_contract_provenance(tmp_path: Path) -> None:
     assert completed.returncode == 80
     summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
     assert summary["manifest_errors"] == [
-        "manifest.contract_tag must equal 'contract-m0-m1-v0.2.0'"
+        "manifest.contract_tag must equal 'contract-m0-m1-v0.2.1'"
     ]
 
 

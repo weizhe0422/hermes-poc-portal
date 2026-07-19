@@ -181,7 +181,7 @@ def _final(argv: list[str]) -> int:
         json.dumps(
             {
                 "schema_version": "0.2.0",
-                "contract_tag": "contract-m0-m1-v0.2.0",
+                "contract_tag": "contract-m0-m1-v0.2.1",
                 "case": case,
             },
             ensure_ascii=False,

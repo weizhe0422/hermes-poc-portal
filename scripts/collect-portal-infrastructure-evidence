@@ -97,7 +97,7 @@ def main() -> int:
         observations = json.loads(observations_path.read_text(encoding="utf-8"))
         if (
             observations.get("schema_version") != "1.0.0"
-            or observations.get("contract_version") != "0.2.0"
+            or observations.get("contract_version") != "0.2.1"
             or observations.get("expected_suite_id") != "infrastructure-v0.2"
             or observations.get("run_id") != run_root.name
             or not isinstance(observations.get("cases"), dict)
@@ -289,7 +289,7 @@ def main() -> int:
 
         payload = {
             "schema_version": "0.2.0",
-            "contract_tag": "contract-m0-m1-v0.2.0",
+            "contract_tag": "contract-m0-m1-v0.2.1",
             "cases": {
                 "SECURITY-001": security_001,
                 "SECURITY-002": security_002,

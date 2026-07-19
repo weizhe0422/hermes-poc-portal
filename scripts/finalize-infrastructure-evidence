@@ -13,7 +13,7 @@ FROZEN_METADATA = {
     "case_source": "frozen-infrastructure-case",
     "coverage_claim": "case-level",
     "acceptance_status": "case-evaluated",
-    "golden_status": "frozen-v0.2.0",
+    "golden_status": "frozen-v0.2.1",
     "evidence_kind": "black-box",
 }
 

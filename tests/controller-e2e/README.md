@@ -1,7 +1,7 @@
 # Hermes Controller E2E — Frozen M0/M1 Runtime Runner
 
 This is an external-container, HTTP-only black-box runner for the Frozen
-M0/M1 Acceptance Contract v0.2.0. It reads the published Controller OpenAPI,
+M0/M1 Acceptance Contract v0.2.1. It reads the published Controller OpenAPI,
 runtime state machine, schemas, error catalog, and Runtime YAML cases from the
 read-only `/spec` mount. It never imports platform code or changes Expected
 Results to match a candidate.
@@ -21,7 +21,7 @@ The Controller child suite has 13 rows: one isolated-environment case plus all
 | `RUNTIME-006` | RT-06 | Start idempotent 200 and no duplicate container |
 | `RUNTIME-007` | RT-06 | Stop idempotent 200 and no duplicate stop |
 | `RUNTIME-008` | RT-07 | parallel lifecycle lock and one 409 conflict |
-| `RUNTIME-009` | RT-08 | bounded start timeout; explicit Contract ambiguity gate |
+| `RUNTIME-009` | RT-08 | bounded start timeout; ERROR then `last_error_code` |
 | `RUNTIME-012` | RT-10, RT-11 | unmanaged Stop forbidden and fixture remains running |
 | `RUNTIME-013` | RT-13, NF-03 | logs API redaction and forbidden synthetic secret scan |
 | `RUNTIME-014` | RT-05 | Restart preserves run-scoped volume marker |
@@ -39,7 +39,7 @@ Every JUnit row carries the exact Frozen Requirement IDs plus:
   `frozen-infrastructure-case`)
 - `hermes.coverage_claim=case-level`
 - `hermes.acceptance_status=case-evaluated`
-- `hermes.golden_status=frozen-v0.2.0`
+- `hermes.golden_status=frozen-v0.2.1`
 - `retry_policy=NO_RETRY`
 
 ## Isolated environment and Engine evidence
@@ -71,13 +71,12 @@ All Engine resources carry `poc.test-run=<run-id>`. Cleanup operates only on
 that label and is independently checked before the outer Compose resources and
 volumes are removed.
 
-## Contract ambiguity and concurrency boundary
+## Contract observability and concurrency boundary
 
-`RUNTIME-009.expected.error_code` has no published mapping to the only
-AgentInstance candidate, `last_error_code`. The runner validates all published
-observations but raises `BLOCKED_BY_CONTRACT` at that mapping boundary; it does
-not invent an equivalence. A child/master result containing only this Contract
-block is `CONTRACT_BLOCKED`, not PASS or a platform FAIL.
+`RUNTIME-009` first polls the AgentInstance until the Frozen final state is
+`ERROR`, then directly compares `AgentInstance.last_error_code` with
+`expected.last_error_code`. The validator requires the exact published field
+name and does not invent an `error_code` alias.
 
 `RUNTIME-008` freezes one accepted request and one `OPERATION_CONFLICT`, but
 does not state whether Start or Stop wins. The test uses a two-thread barrier,
@@ -101,7 +100,7 @@ scripts/run-controller-e2e
 ```
 
 The entrypoint requires branch `test/t-m0-m1`, a clean source tree, Docker,
-tag `contract-m0-m1-v0.2.0`, Contract version `0.2.0`, and a candidate image
+tag `contract-m0-m1-v0.2.1`, Contract version `0.2.1`, and a candidate image
 whose OCI revision label equals `PLATFORM_COMMIT`. `--keep` is diagnostic only;
 because it intentionally prevents cleanup acceptance, it cannot produce PASS.
 
@@ -118,8 +117,8 @@ docker build --tag hermes-poc-controller-e2e:0.1.0 tests/controller-e2e
 | `SPEC_ROOT` | `/spec` | read-only specification root |
 | `RESULTS_DIR` | `/test-results` | writable result volume/path |
 | `CONTROLLER_BASE_URL` | `http://controller-under-test:8090` | public Controller boundary |
-| `CONTRACT_TAG` | `contract-m0-m1-v0.2.0` | Frozen baseline |
-| `CONTRACT_VERSION` | `0.2.0` | Frozen Contract version |
+| `CONTRACT_TAG` | `contract-m0-m1-v0.2.1` | Frozen baseline |
+| `CONTRACT_VERSION` | `0.2.1` | Frozen Contract version |
 | `CONTROLLER_READY_TIMEOUT_SECONDS` | `60` | readiness deadline |
 | `E2E_HTTP_TIMEOUT_SECONDS` | `10` | per-request timeout |
 | `HERMES_START_TIMEOUT_SECONDS` | phase-specific | Contract lifecycle timeout |

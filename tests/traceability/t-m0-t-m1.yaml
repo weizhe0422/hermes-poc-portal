@@ -4,9 +4,9 @@ spec_version: 0.1.0
 scope: [T-M0, T-M1]
 
 frozen_contract:
-  tag: contract-m0-m1-v0.2.0
-  commit: 0ec5667c86522ef0b96e783c9db5912af3413e93
-  version: 0.2.0
+  tag: contract-m0-m1-v0.2.1
+  commit: febdea906a51bab59e582755c495ed2253fb64b8
+  version: 0.2.1
   status: FROZEN
   expected_sources:
     - hermes-poc-specification-v0.1/contracts/openapi/controller-api.yaml
@@ -128,8 +128,7 @@ executed_case_map:
     requirement_ids: [RT-08]
     source: test-cases/runtime/cases.yaml
     evidence_kind: black-box
-    implementation: short-timeout slow fixture, bounded state observation, and isolated Engine evidence
-    contract_gate: BLOCKED_BY_CONTRACT until expected.error_code has a published AgentInstance resource-state field mapping
+    implementation: short-timeout slow fixture, bounded ERROR-state observation, direct AgentInstance.last_error_code validation, and isolated Engine evidence
   - test_case_id: RUNTIME-012
     requirement_ids: [RT-10, RT-11]
     source: test-cases/runtime/cases.yaml
@@ -218,10 +217,6 @@ coverage_gaps:
     detail: Base image/package versions support mirror overrides, but the Frozen Contract does not publish approved internal registry digests or a closed-network build environment.
 
 contract_questions:
-  - test_case_id: RUNTIME-009
-    requirement_ids: [RT-08]
-    classification: CONTRACT_AMBIGUITY
-    detail: Frozen Runtime Expected names error_code; AgentInstance schema publishes last_error_code, but no Contract maps the two fields. The runner must not guess this mapping.
   - test_case_id: RUNTIME-008
     requirement_ids: [RT-07]
     classification: CONTRACT_AMBIGUITY

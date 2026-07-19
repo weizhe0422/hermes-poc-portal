@@ -1,7 +1,7 @@
 # Hermes PoC Portal 獨立黑箱測試 — Frozen T-M0 / T-M1
 
-本 repository 的驗收基準是 `contract-m0-m1-v0.2.0`（Contract v0.2.0，
-commit `0ec5667c86522ef0b96e783c9db5912af3413e93`）。Runner 會在正式執行前
+本 repository 的驗收基準是 `contract-m0-m1-v0.2.1`（Contract v0.2.1，
+commit `febdea906a51bab59e582755c495ed2253fb64b8`）。Runner 會在正式執行前
 確認 tag 可解析，並拒絕 Contract、Infrastructure/Runtime Case 或 Expected Result
 相對於該 tag 有差異的工作樹。
 
@@ -66,7 +66,7 @@ scripts/run-controller-e2e --build-only
 執行完整 31-case master acceptance：
 
 ```sh
-RUN_ID=m0m1-v020-001 \
+RUN_ID=m0m1-v021-001 \
 TEST_RESULTS_ROOT=/absolute/path/to/test-results \
 PLATFORM_COMMIT=<40-character-platform-commit> \
 PORTAL_IMAGE=<portal-candidate-image> \
@@ -168,12 +168,11 @@ Screenshot/video 未做 OCR，仍是明確的 Coverage Gap。
 Control Wafer、Deployment knowledge、SVG 與 skill Fixture 保持唯讀，僅供 T-M4，
 本階段不載入。
 
-## Contract Question 與 Known Flakiness
+## Contract Notes 與 Known Flakiness
 
-- `RUNTIME-009` Frozen Expected 使用 `error_code`，AgentInstance schema 只發布
-  `last_error_code`，但 Frozen Contract 沒有兩者的 mapping。Runner 不猜測欄位；該 Case
-  在其他觀察可完成時仍明確分類 `BLOCKED_BY_CONTRACT`，master 為
-  `CONTRACT_BLOCKED`，直到 Contract 發布 mapping。
+- `RUNTIME-009` 依 v0.2.1 Frozen Expected，先等待 `state == ERROR`，再以同名欄位
+  驗證 `AgentInstance.last_error_code == RUNTIME_START_TIMEOUT`；Runner 不建立
+  `error_code` alias。
 - `RUNTIME-008` 要求平行 Start/Stop 一次 accepted、一次
   `OPERATION_CONFLICT`，但未凍結哪個 request 必須勝出。Runner 使用同步 barrier 且
   `NO_RETRY`；scheduler 若先送出 Stop，會照實回報，不以 retry 掩蓋，因此是已知競態風險。

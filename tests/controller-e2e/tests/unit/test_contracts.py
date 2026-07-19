@@ -207,3 +207,17 @@ def test_resource_state_error_expected_requires_a_published_field_mapping(spec_r
             expected_key="error_code",
             error_code="RUNTIME_START_TIMEOUT",
         )
+
+
+def test_runtime_009_last_error_code_uses_the_published_agent_instance_field(
+    spec_root,
+):
+    contracts = ContractBundle(spec_root)
+
+    assert (
+        contracts.resource_state_error_field(
+            expected_key="last_error_code",
+            error_code="RUNTIME_START_TIMEOUT",
+        )
+        == "last_error_code"
+    )

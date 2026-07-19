@@ -81,7 +81,7 @@ def pytest_collection_modifyitems(
                 ("hermes.case_source", "frozen-runtime-case"),
                 ("hermes.coverage_claim", "case-level"),
                 ("hermes.acceptance_status", "case-evaluated"),
-                ("hermes.golden_status", "frozen-v0.2.0"),
+                ("hermes.golden_status", "frozen-v0.2.1"),
                 ("hermes.evidence_kind", "black-box"),
             ]
         )
@@ -248,7 +248,6 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
             "RUNTIME-008 uses a simultaneous two-thread barrier; the Frozen case does not specify request ordering, so a Stop-first scheduler outcome is reported rather than retried."
         ],
         "contract_questions": [
-            "RUNTIME-009 expected.error_code has no published mapping to AgentInstance.last_error_code.",
             "RUNTIME-008 freezes one accepted operation plus one conflict but does not define which concurrent request must win.",
             "Frozen versions.yaml includes RUNTIME-008/009/012/013 in M0/M1 while the legacy work packet labels them T-M2.",
         ],

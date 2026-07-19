@@ -196,7 +196,7 @@ export default class HermesMetadataReporter implements Reporter {
       record.observed_fields = observation?.observed_fields ?? [];
       record.unobserved_fields = observation?.unobserved_fields ?? [];
     }
-    const provenance = requiredContractProvenance('0.2.0');
+    const provenance = requiredContractProvenance('0.2.1');
     const payload = {
       schema_version: '1.0.0',
       report_type: 'hermes.portal-e2e.frozen-infrastructure-execution',
@@ -205,7 +205,7 @@ export default class HermesMetadataReporter implements Reporter {
       suite_status: result.status,
       acceptance: {
         coverage_claim: 'case-level',
-        golden_status: 'frozen-v0.2.0',
+        golden_status: 'frozen-v0.2.1',
         note: 'Runner observations are compared to Frozen Expected field-by-field. Host and post-exit fields require outer evidence before the final Acceptance verdict.',
       },
       runner_observation_file: 'runner-observations.json',

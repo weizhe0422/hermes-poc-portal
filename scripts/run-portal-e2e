@@ -27,10 +27,10 @@ if ! docker info >/dev/null 2>&1; then
   exit 70
 fi
 
-contract_tag=${CONTRACT_TAG:-contract-m0-m1-v0.2.0}
-contract_version=${CONTRACT_VERSION:-0.2.0}
-if [ "$contract_tag" != contract-m0-m1-v0.2.0 ] || [ "$contract_version" != 0.2.0 ]; then
-  echo "T-M0/T-M1 must use Frozen Contract v0.2.0" >&2
+contract_tag=${CONTRACT_TAG:-contract-m0-m1-v0.2.1}
+contract_version=${CONTRACT_VERSION:-0.2.1}
+if [ "$contract_tag" != contract-m0-m1-v0.2.1 ] || [ "$contract_version" != 0.2.1 ]; then
+  echo "T-M0/T-M1 must use Frozen Contract v0.2.1" >&2
   exit 70
 fi
 contract_commit=$(git rev-parse "$contract_tag^{commit}" 2>/dev/null || true)

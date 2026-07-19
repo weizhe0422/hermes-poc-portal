@@ -127,9 +127,9 @@ services:
       RESULTS_DIR: /test-results/${RUN_ID:-local}/portal-e2e
       RUN_ID: ${RUN_ID:-local}
       SPEC_ROOT: /spec
-      CONTRACT_TAG: ${CONTRACT_TAG:-contract-m0-m1-v0.2.0}
+      CONTRACT_TAG: ${CONTRACT_TAG:-contract-m0-m1-v0.2.1}
       CONTRACT_COMMIT: ${CONTRACT_COMMIT:-}
-      CONTRACT_VERSION: ${CONTRACT_VERSION:-0.2.0}
+      CONTRACT_VERSION: ${CONTRACT_VERSION:-0.2.1}
       PORTAL_READY_TIMEOUT_MS: ${PORTAL_READY_TIMEOUT_MS:-60000}
     depends_on:
       portal-under-test:

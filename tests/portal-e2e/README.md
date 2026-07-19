@@ -1,7 +1,7 @@
 # Hermes PoC Portal E2E — Frozen M0/M1 Infrastructure Runner
 
 This external Playwright container evaluates the eight Portal-runner cases in
-the Frozen M0/M1 Acceptance Contract v0.2.0. It does not implement the T-M3
+the Frozen M0/M1 Acceptance Contract v0.2.1. It does not implement the T-M3
 Portal Runtime, Knowledge, Deployment, History, Feedback, Live Hermes, or
 Golden Case flows.
 
@@ -19,7 +19,7 @@ Every JUnit row carries:
 - `hermes.case_source=frozen-infrastructure-case`
 - `hermes.coverage_claim=case-level`
 - `hermes.acceptance_status=case-evaluated`
-- `hermes.golden_status=frozen-v0.2.0`
+- `hermes.golden_status=frozen-v0.2.1`
 - the exact Requirement IDs loaded from the Frozen YAML
 
 The eight rows are `SECURITY-001..003`, `EXECUTION-001..004`, and
@@ -66,9 +66,9 @@ Required environment:
 | `RESULTS_DIR` | Per-run directory below the independent result volume |
 | `RUN_ID` | Lowercase artifact-safe run identity |
 | `SPEC_ROOT` | Read-only specification root, normally `/spec` |
-| `CONTRACT_TAG` | Must identify `contract-m0-m1-v0.2.0` |
+| `CONTRACT_TAG` | Must identify `contract-m0-m1-v0.2.1` |
 | `CONTRACT_COMMIT` | Full lowercase commit injected by orchestration |
-| `CONTRACT_VERSION` | Must equal `0.2.0` |
+| `CONTRACT_VERSION` | Must equal `0.2.1` |
 
 Optional bounded timeout variables remain `NETWORK_PROBE_TIMEOUT_MS`,
 `PORTAL_READY_TIMEOUT_MS`, and `PORTAL_E2E_TIMEOUT_MS`.

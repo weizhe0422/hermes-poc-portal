@@ -19,7 +19,7 @@ export type FrozenInfrastructureCaseId =
 
 const FROZEN_CASE_ID_SET = new Set<string>(FROZEN_INFRASTRUCTURE_CASE_IDS);
 const FROZEN_SUITE_ID = 'infrastructure-v0.2';
-const FROZEN_CONTRACT_VERSION = '0.2.0';
+const FROZEN_CONTRACT_VERSION = '0.2.1';
 const REQUIREMENT_ID = /^[A-Z][A-Z0-9]*-\d+$/;
 
 export const FROZEN_INFRASTRUCTURE_ANNOTATIONS = {
@@ -303,7 +303,7 @@ export function frozenInfrastructureTest(
       },
       {
         type: FROZEN_INFRASTRUCTURE_ANNOTATIONS.goldenStatus,
-        description: 'frozen-v0.2.0',
+        description: 'frozen-v0.2.1',
       },
       {
         type: FROZEN_INFRASTRUCTURE_ANNOTATIONS.evidenceKind,

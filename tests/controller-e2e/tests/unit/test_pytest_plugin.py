@@ -33,12 +33,12 @@ def test_contract_ambiguity_classification_survives_canonical_junit(
 from controller_e2e.errors import ContractAmbiguity
 
 @pytest.mark.case(
-    test_case_id="RUNTIME-009",
-    requirement_ids=("RT-08",),
+    test_case_id="RUNTIME-001",
+    requirement_ids=("RT-01", "RT-02"),
     critical=True,
 )
-def test_frozen_mapping_is_unpublished():
-    raise ContractAmbiguity("synthetic frozen mapping ambiguity")
+def test_synthetic_contract_ambiguity():
+    raise ContractAmbiguity("synthetic Contract ambiguity")
 """,
         encoding="utf-8",
     )

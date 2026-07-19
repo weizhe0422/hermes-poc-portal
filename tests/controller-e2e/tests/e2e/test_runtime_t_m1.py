@@ -659,12 +659,12 @@ def test_runtime_009_reports_start_timeout_as_resource_state(
     )
 
     resource_field = contracts.resource_state_error_field(
-        expected_key="error_code",
-        error_code=runtime_case.expected["error_code"],
+        expected_key="last_error_code",
+        error_code=runtime_case.expected["last_error_code"],
     )
     require_equal(
         final.get(resource_field),
-        runtime_case.expected["error_code"],
+        runtime_case.expected["last_error_code"],
         "RUNTIME-009 resource-state error code",
     )
 

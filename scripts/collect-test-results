@@ -22,9 +22,9 @@ _RFC3339_UTC = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 _RUN_ID = re.compile(r"^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$")
 _TEST_CASE_ID = re.compile(r"^[A-Z][A-Z0-9-]*-\d{3}$")
 _REQUIREMENT_ID = re.compile(r"^[A-Z][A-Z0-9]*-\d{2}$")
-_FROZEN_CONTRACT_TAG = "contract-m0-m1-v0.2.0"
-_FROZEN_CONTRACT_COMMIT = "0ec5667c86522ef0b96e783c9db5912af3413e93"
-_FROZEN_CONTRACT_VERSION = "0.2.0"
+_FROZEN_CONTRACT_TAG = "contract-m0-m1-v0.2.1"
+_FROZEN_CONTRACT_COMMIT = "febdea906a51bab59e582755c495ed2253fb64b8"
+_FROZEN_CONTRACT_VERSION = "0.2.1"
 
 _CASE_REQUIREMENTS = {
     "ARTIFACT-001": ("BLD-08",),
@@ -305,7 +305,7 @@ def _metadata_errors(case: dict[str, Any]) -> list[str]:
             "case_source": "frozen-runtime-case",
             "coverage_claim": "case-level",
             "acceptance_status": "case-evaluated",
-            "golden_status": "frozen-v0.2.0",
+            "golden_status": "frozen-v0.2.1",
             "evidence_kind": "black-box",
             "critical_metadata": "true",
         }
@@ -319,7 +319,7 @@ def _metadata_errors(case: dict[str, Any]) -> list[str]:
             "case_source": "frozen-infrastructure-case",
             "coverage_claim": "case-level",
             "acceptance_status": "case-evaluated",
-            "golden_status": "frozen-v0.2.0",
+            "golden_status": "frozen-v0.2.1",
             "evidence_kind": _INFRASTRUCTURE_EVIDENCE[case["test_case_id"]],
             "critical_metadata": "true",
         }
@@ -1198,7 +1198,7 @@ def _missing_frozen_case(case_id: str, junit_source: Path) -> dict[str, Any]:
         ),
         "coverage_claim": "none",
         "acceptance_status": "test-not-implemented",
-        "golden_status": "frozen-v0.2.0",
+        "golden_status": "frozen-v0.2.1",
         "evidence_kind": "missing-test-evidence",
         "engine_evidence": None,
         "engine_evidence_file": None,
@@ -1460,7 +1460,7 @@ def _master_main(
     )
     suite = ET.Element(
         "testsuite",
-        name="hermes.m0-m1.acceptance.v0.2.0",
+        name="hermes.m0-m1.acceptance.v0.2.1",
         tests="31",
         skipped=str(len(_DEFERRED_CASES)),
     )
