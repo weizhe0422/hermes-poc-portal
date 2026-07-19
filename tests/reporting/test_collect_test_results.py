@@ -14,6 +14,7 @@ from jsonschema import Draft202012Validator
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COLLECTOR = REPO_ROOT / "scripts" / "collect-test-results"
+FROZEN_CONTRACT_COMMIT = "0ec5667c86522ef0b96e783c9db5912af3413e93"
 
 
 def _write_junit(
@@ -28,6 +29,9 @@ def _write_junit(
         "run_id": run_root.name,
         "fixture_type": "SYNTHETIC",
         "spec_version": "0.1.0",
+        "contract_tag": "contract-m0-m1-v0.2.0",
+        "contract_commit": FROZEN_CONTRACT_COMMIT,
+        "contract_version": "0.2.0",
         "git_commit": "0123456789abcdef0123456789abcdef01234567",
         "git_branch": "test/t-m0-m1",
         "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
@@ -82,6 +86,24 @@ def _write_junit(
     (snapshots / "outer-cleanup.json").write_text(
         json.dumps({"compose_down_verified": True}), encoding="utf-8"
     )
+    (snapshots / "controller-environment.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2.0",
+                "contract_tag": "contract-m0-m1-v0.2.0",
+                "case": {
+                    "test_case_id": "CONTROLLER-ENV-001",
+                    "is_independent_container": True,
+                    "uses_isolated_docker_engine": True,
+                    "has_docker_socket": False,
+                    "can_affect_dev_or_prod_containers": False,
+                    "cleanup_limited_to_run_id": True,
+                    "verdict": True,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
     (run_root / "controller-e2e" / "runner-status.json").write_text(
         json.dumps(
             {
@@ -96,10 +118,19 @@ def _write_junit(
         encoding="utf-8",
     )
     case_specs = (
+        ("CONTROLLER-ENV-001", "E2E-03,E2E-04"),
         ("RUNTIME-001", "RT-01,RT-02"),
         ("RUNTIME-003", "RT-03,RT-09"),
+        ("RUNTIME-004", "RT-04"),
+        ("RUNTIME-005", "RT-05"),
         ("RUNTIME-006", "RT-06"),
-        ("RUNTIME-014", "RT-05,NF-05"),
+        ("RUNTIME-007", "RT-06"),
+        ("RUNTIME-008", "RT-07"),
+        ("RUNTIME-009", "RT-08"),
+        ("RUNTIME-012", "RT-10,RT-11"),
+        ("RUNTIME-013", "RT-13,NF-03"),
+        ("RUNTIME-014", "RT-05"),
+        ("RUNTIME-017", "RT-06"),
     )
     testcase_rows = []
     for case_id, requirements in case_specs:
@@ -109,8 +140,17 @@ def _write_junit(
             else ""
         )
         engine_property = (
-            '<property name="engine_evidence" value="PASS" />'
-            if case_id in {"RUNTIME-003", "RUNTIME-006", "RUNTIME-014"}
+            '<property name="engine_evidence" value="PASS" />\n'
+            f'      <property name="engine_evidence_file" '
+            f'value="evidence-{case_id}.json" />'
+            if case_id.startswith("RUNTIME-") and case_id != "RUNTIME-001"
+            else ""
+        )
+        outer_property = (
+            '<property name="outer_evidence" value="PASS" />\n'
+            '      <property name="outer_evidence_file" '
+            'value="controller-environment.json" />'
+            if case_id == "CONTROLLER-ENV-001"
             else ""
         )
         if case_id != "RUNTIME-001" or status == "passed":
@@ -119,31 +159,90 @@ def _write_junit(
             result = '<failure message="contract mismatch" />'
         else:
             result = '<skipped message="coverage gap" />'
+        is_runtime = case_id.startswith("RUNTIME-")
+        case_source = (
+            "frozen-runtime-case" if is_runtime else "frozen-infrastructure-case"
+        )
+        evidence_kind = "black-box" if is_runtime else "controller-isolation"
         testcase_rows.append(
             f"""  <testcase classname="controller" name="{case_id.lower()}" time="0.1">
     <properties>
       <property name="test_case_id" value="{case_id}" />
       {requirement_property}
       <property name="critical" value="true" />
-      <property name="hermes.case_source" value="bundle-runtime-case" />
-      <property name="hermes.coverage_claim" value="case-level-partial" />
+      <property name="hermes.case_source" value="{case_source}" />
+      <property name="hermes.coverage_claim" value="case-level" />
       <property name="hermes.acceptance_status" value="case-evaluated" />
-      <property name="hermes.golden_status" value="bundle-draft-runtime-case" />
-      <property name="hermes.evidence_kind" value="black-box" />
+      <property name="hermes.golden_status" value="frozen-v0.2.0" />
+      <property name="hermes.evidence_kind" value="{evidence_kind}" />
       {engine_property}
+      {outer_property}
     </properties>
     {result}
   </testcase>"""
         )
     junit = (
         '<?xml version="1.0" encoding="utf-8"?>\n'
-        '<testsuite tests="4">\n'
+        '<testsuite tests="13">\n'
         + "\n".join(testcase_rows)
         + "\n</testsuite>\n"
     )
     junit_dir = run_root / ("controller-e2e/core-start" if nested else "junit")
     junit_dir.mkdir(parents=True)
     (junit_dir / "controller.xml").write_text(junit, encoding="utf-8")
+    phase_status_rows = []
+    for case_id, requirements in case_specs:
+        if not case_id.startswith("RUNTIME-"):
+            continue
+        phase = case_id.lower()
+        phase_dir = run_root / "controller-e2e" / phase
+        phase_dir.mkdir(parents=True, exist_ok=True)
+        (phase_dir / "summary.json").write_text(
+            json.dumps({"overall_status": "PASS", "test_case_id": case_id}),
+            encoding="utf-8",
+        )
+        (phase_dir / "summary.md").write_text(
+            f"# {case_id}\n\nPASS\n", encoding="utf-8"
+        )
+        (phase_dir / "http-trace.jsonl").write_text(
+            json.dumps({"test_case_id": case_id, "status": "synthetic"}) + "\n",
+            encoding="utf-8",
+        )
+        (logs / f"controller-{phase}.log").write_text(
+            f"synthetic log for {case_id}\n", encoding="utf-8"
+        )
+        phase_status_rows.append(
+            json.dumps(
+                {
+                    "phase": phase,
+                    "test_case_id": case_id,
+                    "runner_exit_code": 0,
+                    "engine_exit_code": 0,
+                }
+            )
+        )
+        if case_id == "RUNTIME-001":
+            continue
+        engine_evidence = {
+            "test_case_id": case_id,
+            "requirement_ids": requirements.split(","),
+            "verdict": True,
+        }
+        if case_id == "RUNTIME-008":
+            engine_evidence["winning_action"] = "START"
+        (snapshots / f"evidence-{case_id}.json").write_text(
+            json.dumps(engine_evidence), encoding="utf-8"
+        )
+        (snapshots / f"events-{case_id}.jsonl").write_text(
+            '{"synthetic":"event evidence"}\n', encoding="utf-8"
+        )
+    (run_root / "controller-e2e" / "phase-status.jsonl").write_text(
+        "\n".join(phase_status_rows) + "\n", encoding="utf-8"
+    )
+    (run_root / "controller-e2e" / "runtime-008" / "engine-context.json").write_text(
+        '{"test_case_id":"RUNTIME-008","winning_action":"START"}\n',
+        encoding="utf-8",
+    )
 
 
 def _write_portal_junit(run_root: Path) -> None:
@@ -152,17 +251,26 @@ def _write_portal_junit(run_root: Path) -> None:
         "run_id": run_root.name,
         "fixture_type": "SYNTHETIC",
         "spec_version": "0.1.0",
+        "contract_tag": "contract-m0-m1-v0.2.0",
+        "contract_commit": FROZEN_CONTRACT_COMMIT,
+        "contract_version": "0.2.0",
         "git_commit": "0123456789abcdef0123456789abcdef01234567",
         "git_branch": "test/t-m0-m1",
         "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
         "test_suite": "portal-e2e",
         "images": {
+            "controller": "example.invalid/controller:candidate",
+            "docker_engine_test": "example.invalid/docker-engine:test",
+            "hermes_fixture": "example.invalid/hermes-fixture:0.1.0",
             "portal": "example.invalid/portal:candidate",
             "portal_e2e": "example.invalid/portal-e2e:0.1.0",
         },
         "image_ids": {
-            "portal": f"sha256:{'a' * 64}",
-            "portal_e2e": f"sha256:{'b' * 64}",
+            "controller": f"sha256:{'a' * 64}",
+            "docker_engine_test": f"sha256:{'c' * 64}",
+            "hermes_fixture": f"sha256:{'d' * 64}",
+            "portal": f"sha256:{'e' * 64}",
+            "portal_e2e": f"sha256:{'f' * 64}",
         },
         "executed_at": "2026-07-18T00:00:00Z",
     }
@@ -193,22 +301,35 @@ def _write_portal_junit(run_root: Path) -> None:
         ),
         encoding="utf-8",
     )
+    (portal / "summary.json").write_text(
+        '{"overall_status":"PASS"}\n', encoding="utf-8"
+    )
     case_specs = (
         ("ARTIFACT-001", "BLD-08", "artifact"),
-        ("EXECUTION-001", "E2E-05", "preflight"),
-        ("EXECUTION-002", "E2E-06", "artifact"),
-        ("EXECUTION-003", "E2E-07", "preflight"),
-        ("EXECUTION-004", "E2E-08", "preflight"),
-        ("SECURITY-001", "E2E-01", "network-isolation"),
-        ("SECURITY-002", "E2E-02", "network-isolation"),
-        ("SECURITY-003", "E2E-02", "network-isolation"),
+        ("EXECUTION-001", "E2E-05", "execution-probe"),
+        ("EXECUTION-002", "E2E-06", "execution-probe"),
+        ("EXECUTION-003", "E2E-07", "execution-probe"),
+        ("EXECUTION-004", "E2E-08", "runner-isolation"),
+        ("SECURITY-001", "BLD-07", "host-network"),
+        ("SECURITY-002", "E2E-01,E2E-02", "network-isolation"),
+        ("SECURITY-003", "E2E-02", "runner-isolation"),
     )
     rows = []
     metadata_cases = []
     for case_id, requirements, evidence_kind in case_specs:
-        result = (
-            '<skipped message="orchestration-only source-tree check" />'
-            if case_id == "EXECUTION-004"
+        result = ""
+        outer_property = (
+            '<property name="outer_evidence" value="PASS" />\n'
+            '      <property name="outer_evidence_file" '
+            'value="infrastructure-evidence.json" />'
+            if case_id
+            in {
+                "SECURITY-001",
+                "SECURITY-002",
+                "SECURITY-003",
+                "EXECUTION-004",
+                "ARTIFACT-001",
+            }
             else ""
         )
         rows.append(
@@ -216,12 +337,13 @@ def _write_portal_junit(run_root: Path) -> None:
     <properties>
       <property name="test_case_id" value="{case_id}" />
       <property name="requirement_ids" value="{requirements}" />
-      <property name="critical" value="false" />
-      <property name="hermes.case_source" value="traceability-matrix-placeholder" />
-      <property name="hermes.coverage_claim" value="none" />
-      <property name="hermes.acceptance_status" value="not-evaluated" />
-      <property name="hermes.golden_status" value="not-applicable" />
+      <property name="critical" value="true" />
+      <property name="hermes.case_source" value="frozen-infrastructure-case" />
+      <property name="hermes.coverage_claim" value="case-level" />
+      <property name="hermes.acceptance_status" value="case-evaluated" />
+      <property name="hermes.golden_status" value="frozen-v0.2.0" />
       <property name="hermes.evidence_kind" value="{evidence_kind}" />
+      {outer_property}
     </properties>
     {result}
   </testcase>"""
@@ -237,8 +359,74 @@ def _write_portal_junit(run_root: Path) -> None:
     (portal / "metadata.json").write_text(
         json.dumps(
             {
-                "report_type": "hermes.portal-e2e.matrix-placeholder-execution",
+                "report_type": "hermes.portal-e2e.frozen-infrastructure-execution",
                 "cases": metadata_cases,
+            }
+        ),
+        encoding="utf-8",
+    )
+    trace_path = portal / "execution-probe" / "test-output" / "probe" / "trace.zip"
+    trace_path.parent.mkdir(parents=True)
+    with zipfile.ZipFile(trace_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("trace.network", "synthetic trace evidence")
+    (portal / "execution-probe" / "playwright.log").write_text(
+        "intentional failure retained\n", encoding="utf-8"
+    )
+    (portal / "infrastructure-evidence.json").write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2.0",
+                "contract_tag": "contract-m0-m1-v0.2.0",
+                "cases": {
+                    "SECURITY-001": {
+                        "portal_running": True,
+                        "controller_running": True,
+                        "hermes_running": True,
+                        "host_ports_published": [8080],
+                        "controller_published": False,
+                        "hermes_published": False,
+                        "verdict": True,
+                    },
+                    "SECURITY-002": {
+                        "is_independent_container": True,
+                        "networks": ["e2e-network"],
+                        "can_connect_portal": True,
+                        "can_connect_controller": False,
+                        "can_connect_hermes": False,
+                        "verdict": True,
+                    },
+                    "SECURITY-003": {
+                        "has_docker_socket": False,
+                        "has_knowledge_mount": False,
+                        "has_skill_mount": False,
+                        "has_formal_volume": False,
+                        "has_writable_source_mount": False,
+                        "can_access_git_metadata": False,
+                        "verdict": True,
+                    },
+                    "EXECUTION-004": {
+                        "git_status_unchanged": True,
+                        "runner_has_git_metadata": False,
+                        "runner_has_writable_source": False,
+                        "only_gitignore_artifacts_allowed": True,
+                        "verdict": True,
+                    },
+                    "ARTIFACT-001": {
+                        "written_to_independent_volume": True,
+                        "readable_after_runner_exit": True,
+                        "required_files_present": {
+                            "manifest": True,
+                            "summary": True,
+                            "junit": True,
+                        },
+                        "trace_paths": [
+                            "portal-e2e/execution-probe/test-output/probe/trace.zip"
+                        ],
+                        "log_paths": ["portal-e2e/execution-probe/playwright.log"],
+                        "secret_findings": [],
+                        "verdict": True,
+                    },
+                },
             }
         ),
         encoding="utf-8",
@@ -262,6 +450,30 @@ def _run_collector(
     )
 
 
+def _run_master_collector(
+    results_root: Path,
+    master_run_id: str,
+    infrastructure_run_id: str,
+    runtime_run_id: str,
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["TEST_RESULTS_ROOT"] = str(results_root)
+    return subprocess.run(
+        [
+            sys.executable,
+            str(COLLECTOR),
+            "--master",
+            master_run_id,
+            infrastructure_run_id,
+            runtime_run_id,
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=environment,
+    )
+
+
 def test_collector_writes_machine_and_human_summary(tmp_path: Path) -> None:
     run_root = tmp_path / "run-pass"
     _write_junit(run_root)
@@ -277,9 +489,373 @@ def test_collector_writes_machine_and_human_summary(tmp_path: Path) -> None:
     )
     Draft202012Validator(summary_schema).validate(summary)
     assert summary["status"] == "PASS"
-    assert summary["cases"][0]["test_case_id"] == "RUNTIME-001"
-    assert summary["cases"][0]["requirement_ids"] == ["RT-01", "RT-02"]
+    runtime_001 = next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-001"
+    )
+    assert runtime_001["requirement_ids"] == ["RT-01", "RT-02"]
     assert "RUNTIME-001" in (run_root / "summary.md").read_text(encoding="utf-8")
+
+
+def test_collector_evaluates_the_complete_frozen_runtime_inventory(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-frozen-runtime"
+    _write_junit(run_root)
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 0, completed.stderr
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "PASS"
+    assert summary["counts"] == {
+        "total": 13,
+        "passed": 13,
+        "failed": 0,
+        "skipped": 0,
+        "not_evaluated": 0,
+        "blocked_by_contract": 0,
+    }
+    assert [
+        case["test_case_id"]
+        for case in summary["cases"]
+        if case["test_case_id"].startswith("RUNTIME-")
+    ] == [
+        case_id
+        for case_id, _requirements in (
+            ("RUNTIME-001", "RT-01,RT-02"),
+            ("RUNTIME-003", "RT-03,RT-09"),
+            ("RUNTIME-004", "RT-04"),
+            ("RUNTIME-005", "RT-05"),
+            ("RUNTIME-006", "RT-06"),
+            ("RUNTIME-007", "RT-06"),
+            ("RUNTIME-008", "RT-07"),
+            ("RUNTIME-009", "RT-08"),
+            ("RUNTIME-012", "RT-10,RT-11"),
+            ("RUNTIME-013", "RT-13,NF-03"),
+            ("RUNTIME-014", "RT-05"),
+            ("RUNTIME-017", "RT-06"),
+        )
+    ]
+
+
+def test_master_collector_classifies_all_31_cases_without_not_evaluated(
+    tmp_path: Path,
+) -> None:
+    infrastructure_root = tmp_path / "infra-child"
+    runtime_root = tmp_path / "runtime-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 0
+
+    completed = _run_master_collector(
+        tmp_path,
+        "m0-m1-master",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    master_root = tmp_path / "m0-m1-master"
+    summary = json.loads((master_root / "summary.json").read_text(encoding="utf-8"))
+    summary_schema = json.loads(
+        (REPO_ROOT / "tests/reporting/summary.schema.json").read_text(encoding="utf-8")
+    )
+    Draft202012Validator(summary_schema).validate(summary)
+    master_manifest = json.loads(
+        (master_root / "manifest.yaml").read_text(encoding="utf-8")
+    )
+    manifest_schema = json.loads(
+        (REPO_ROOT / "tests/reporting/manifest.schema.json").read_text(encoding="utf-8")
+    )
+    Draft202012Validator(manifest_schema).validate(master_manifest)
+    assert summary["status"] == "PASS"
+    assert summary["counts"] == {
+        "total": 31,
+        "passed": 21,
+        "failed": 0,
+        "skipped": 10,
+        "not_evaluated": 0,
+        "blocked_by_contract": 0,
+        "deferred_by_milestone": 10,
+    }
+    classifications = {
+        case["test_case_id"]: case["status"] for case in summary["cases"]
+    }
+    assert set(classifications.values()) == {"PASSED", "DEFERRED_BY_MILESTONE"}
+    assert classifications["RUNTIME-017"] == "PASSED"
+    assert classifications["CW-001"] == "DEFERRED_BY_MILESTONE"
+    assert classifications["DEPLOY-005"] == "DEFERRED_BY_MILESTONE"
+    assert all(case["status"] != "NOT_EVALUATED" for case in summary["cases"])
+    master_junit = master_root / "junit" / "m0-m1-acceptance.xml"
+    assert len(ET.parse(master_junit).getroot().findall("testcase")) == 31
+
+
+def test_master_collector_rejects_shared_image_identity_drift(
+    tmp_path: Path,
+) -> None:
+    infrastructure_root = tmp_path / "infra-image-child"
+    runtime_root = tmp_path / "runtime-image-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 0
+    runtime_manifest_path = runtime_root / "manifest.yaml"
+    runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+    runtime_manifest["images"]["controller"] = "example.invalid/controller:retagged"
+    runtime_manifest["image_ids"]["hermes_fixture"] = f"sha256:{'9' * 64}"
+    runtime_manifest_path.write_text(json.dumps(runtime_manifest), encoding="utf-8")
+
+    completed = _run_master_collector(
+        tmp_path,
+        "m0-m1-image-drift",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 80
+    summary = json.loads(
+        (tmp_path / "m0-m1-image-drift" / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["status"] == "FAIL"
+    assert "child manifests disagree on images.controller" in summary[
+        "manifest_errors"
+    ]
+    assert "child manifests disagree on image_ids.hermes_fixture" in summary[
+        "manifest_errors"
+    ]
+
+
+def test_master_collector_always_classifies_all_31_when_child_row_is_missing(
+    tmp_path: Path,
+) -> None:
+    infrastructure_root = tmp_path / "infra-missing-row-child"
+    runtime_root = tmp_path / "runtime-missing-row-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 0
+    runtime_junit = runtime_root / "junit/controller.xml"
+    tree = ET.parse(runtime_junit)
+    target = next(
+        testcase
+        for testcase in tree.getroot().iter("testcase")
+        if any(
+            prop.get("name") == "test_case_id"
+            and prop.get("value") == "RUNTIME-017"
+            for prop in testcase.findall("./properties/property")
+        )
+    )
+    tree.getroot().remove(target)
+    tree.write(runtime_junit, encoding="utf-8", xml_declaration=True)
+
+    completed = _run_master_collector(
+        tmp_path,
+        "m0-m1-missing-row",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 80
+    master_root = tmp_path / "m0-m1-missing-row"
+    summary = json.loads((master_root / "summary.json").read_text(encoding="utf-8"))
+    assert len(summary["cases"]) == 31
+    missing = next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-017"
+    )
+    assert missing["status"] == "FAILED"
+    assert missing["failure_classification"] == "BLOCKED_BY_ENVIRONMENT"
+    master_junit = ET.parse(master_root / "junit/m0-m1-acceptance.xml").getroot()
+    assert len(master_junit.findall("testcase")) == 31
+    missing_row = next(
+        testcase
+        for testcase in master_junit.findall("testcase")
+        if any(
+            prop.get("name") == "test_case_id"
+            and prop.get("value") == "RUNTIME-017"
+            for prop in testcase.findall("./properties/property")
+        )
+    )
+    assert missing_row.find("failure") is not None
+
+
+def test_master_fail_status_is_represented_in_junit(
+    tmp_path: Path,
+) -> None:
+    infrastructure_root = tmp_path / "infra-integrity-child"
+    runtime_root = tmp_path / "runtime-integrity-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 0
+    runner_status_path = runtime_root / "controller-e2e/runner-status.json"
+    runner_status = json.loads(runner_status_path.read_text(encoding="utf-8"))
+    runner_status["source_tree_unchanged"] = False
+    runner_status_path.write_text(json.dumps(runner_status), encoding="utf-8")
+
+    completed = _run_master_collector(
+        tmp_path,
+        "m0-m1-integrity-failed",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 80
+    master_root = tmp_path / "m0-m1-integrity-failed"
+    summary = json.loads((master_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "FAIL"
+    junit = ET.parse(master_root / "junit/m0-m1-acceptance.xml").getroot()
+    assert len(junit.findall("testcase")) == 31
+    assert any(
+        row.find("failure") is not None or row.find("error") is not None
+        for row in junit.findall("testcase")
+    )
+
+
+def test_master_collector_retains_a_frozen_child_failure(tmp_path: Path) -> None:
+    infrastructure_root = tmp_path / "infra-failure-child"
+    runtime_root = tmp_path / "runtime-failure-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 0
+    runtime_junit = next((runtime_root / "junit").glob("*.xml"))
+    tree = ET.parse(runtime_junit)
+    target = next(
+        testcase
+        for testcase in tree.getroot().iter("testcase")
+        if any(
+            prop.get("name") == "test_case_id"
+            and prop.get("value") == "RUNTIME-001"
+            for prop in testcase.findall("./properties/property")
+        )
+    )
+    ET.SubElement(target, "failure", message="frozen Expected Result mismatch")
+    tree.write(runtime_junit, encoding="utf-8", xml_declaration=True)
+    runner_status_path = runtime_root / "controller-e2e/runner-status.json"
+    runner_status = json.loads(runner_status_path.read_text(encoding="utf-8"))
+    runner_status["runner_passed"] = False
+    runner_status_path.write_text(json.dumps(runner_status), encoding="utf-8")
+
+    completed = _run_master_collector(
+        tmp_path,
+        "m0-m1-failed-master",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 80
+    summary = json.loads(
+        (tmp_path / "m0-m1-failed-master" / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert summary["status"] == "FAIL"
+    assert summary["counts"]["failed"] == 1
+    assert summary["critical_not_passed"] == ["RUNTIME-001"]
+    assert next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-001"
+    )["status"] == "FAILED"
+
+
+def test_master_junit_marks_outer_evidence_validation_failures(
+    tmp_path: Path,
+) -> None:
+    infrastructure_root = tmp_path / "infra-evidence-child"
+    runtime_root = tmp_path / "runtime-evidence-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 0
+    (infrastructure_root / "portal-e2e/infrastructure-evidence.json").unlink()
+
+    completed = _run_master_collector(
+        tmp_path,
+        "m0-m1-evidence-failed",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 80
+    master_root = tmp_path / "m0-m1-evidence-failed"
+    summary = json.loads((master_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["counts"]["failed"] == 5
+    tree = ET.parse(master_root / "junit/m0-m1-acceptance.xml")
+    security_001 = next(
+        testcase
+        for testcase in tree.getroot().iter("testcase")
+        if any(
+            prop.get("name") == "test_case_id"
+            and prop.get("value") == "SECURITY-001"
+            for prop in testcase.findall("./properties/property")
+        )
+    )
+    assert security_001.find("failure") is not None
+
+
+def test_master_collector_preserves_contract_blocked_as_a_distinct_outcome(
+    tmp_path: Path,
+) -> None:
+    infrastructure_root = tmp_path / "infra-contract-child"
+    runtime_root = tmp_path / "runtime-contract-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    runtime_junit = runtime_root / "junit/controller.xml"
+    tree = ET.parse(runtime_junit)
+    runtime_009 = next(
+        testcase
+        for testcase in tree.getroot().iter("testcase")
+        if any(
+            prop.get("name") == "test_case_id"
+            and prop.get("value") == "RUNTIME-009"
+            for prop in testcase.findall("./properties/property")
+        )
+    )
+    properties = runtime_009.find("properties")
+    assert properties is not None
+    ET.SubElement(
+        properties,
+        "property",
+        name="failure_classification",
+        value="BLOCKED_BY_CONTRACT",
+    )
+    ET.SubElement(runtime_009, "failure", message="Frozen mapping is unpublished")
+    tree.write(runtime_junit, encoding="utf-8", xml_declaration=True)
+    runner_status_path = runtime_root / "controller-e2e/runner-status.json"
+    runner_status = json.loads(runner_status_path.read_text(encoding="utf-8"))
+    runner_status["runner_passed"] = False
+    runner_status_path.write_text(json.dumps(runner_status), encoding="utf-8")
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 80
+
+    completed = _run_master_collector(
+        tmp_path,
+        "m0-m1-contract-blocked",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 80
+    master_root = tmp_path / "m0-m1-contract-blocked"
+    summary = json.loads((master_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "CONTRACT_BLOCKED"
+    assert summary["counts"] == {
+        "total": 31,
+        "passed": 20,
+        "failed": 0,
+        "blocked_by_contract": 1,
+        "skipped": 10,
+        "not_evaluated": 0,
+        "deferred_by_milestone": 10,
+    }
+    case_ids = [case["test_case_id"] for case in summary["cases"]]
+    assert len(case_ids) == len(set(case_ids)) == 31
+    assert summary["critical_not_passed"] == ["RUNTIME-009"]
+    assert next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-009"
+    )["status"] == "BLOCKED_BY_CONTRACT"
 
 
 def test_collector_fails_when_critical_case_is_skipped(tmp_path: Path) -> None:
@@ -292,6 +868,73 @@ def test_collector_fails_when_critical_case_is_skipped(tmp_path: Path) -> None:
     summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
     assert summary["status"] == "FAIL"
     assert summary["critical_not_passed"] == ["RUNTIME-001"]
+
+
+def test_collector_classifies_frozen_contract_ambiguity_without_platform_failure(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-contract-blocked"
+    _write_junit(run_root)
+    junit_path = run_root / "junit/controller.xml"
+    tree = ET.parse(junit_path)
+    target = next(
+        testcase
+        for testcase in tree.getroot().iter("testcase")
+        if any(
+            prop.get("name") == "test_case_id"
+            and prop.get("value") == "RUNTIME-009"
+            for prop in testcase.findall("./properties/property")
+        )
+    )
+    properties = target.find("properties")
+    assert properties is not None
+    ET.SubElement(
+        properties,
+        "property",
+        name="failure_classification",
+        value="BLOCKED_BY_CONTRACT",
+    )
+    ET.SubElement(
+        target,
+        "failure",
+        message="Frozen error_code has no published AgentInstance mapping",
+    )
+    tree.write(junit_path, encoding="utf-8", xml_declaration=True)
+    runner_status_path = run_root / "controller-e2e/runner-status.json"
+    runner_status = json.loads(runner_status_path.read_text(encoding="utf-8"))
+    runner_status["runner_passed"] = False
+    runner_status_path.write_text(json.dumps(runner_status), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "CONTRACT_BLOCKED"
+    assert summary["counts"]["passed"] == 12
+    assert summary["counts"]["failed"] == 0
+    assert summary["counts"]["blocked_by_contract"] == 1
+    assert summary["critical_not_passed"] == ["RUNTIME-009"]
+    runtime_009 = next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-009"
+    )
+    assert runtime_009["status"] == "BLOCKED_BY_CONTRACT"
+    assert runtime_009["failure_classification"] == "BLOCKED_BY_CONTRACT"
+
+
+def test_collector_allows_empty_no_lifecycle_engine_event_windows(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-empty-noop-events"
+    _write_junit(run_root)
+    snapshots = run_root / "controller-e2e/docker-snapshots"
+    for case_id in ("RUNTIME-006", "RUNTIME-007"):
+        (snapshots / f"events-{case_id}.jsonl").write_text("", encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 0, completed.stderr
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "PASS"
 
 
 def test_collector_fails_when_artifact_contains_test_secret(tmp_path: Path) -> None:
@@ -364,6 +1007,34 @@ def test_collector_requires_platform_candidate_provenance(tmp_path: Path) -> Non
     ]
 
 
+def test_collector_requires_frozen_contract_provenance(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-no-contract-provenance"
+    _write_junit(run_root)
+    manifest_path = run_root / "manifest.yaml"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("contract_tag")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["manifest_errors"] == [
+        "manifest.contract_tag must equal 'contract-m0-m1-v0.2.0'"
+    ]
+
+
+def test_manifest_schema_describes_frozen_contract_provenance(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-manifest-schema"
+    _write_junit(run_root)
+    manifest = json.loads((run_root / "manifest.yaml").read_text(encoding="utf-8"))
+    manifest_schema = json.loads(
+        (REPO_ROOT / "tests/reporting/manifest.schema.json").read_text(encoding="utf-8")
+    )
+
+    Draft202012Validator(manifest_schema).validate(manifest)
+
+
 def test_collector_requires_image_ids_for_every_image(tmp_path: Path) -> None:
     run_root = tmp_path / "run-incomplete-image-ids"
     _write_junit(run_root)
@@ -415,7 +1086,9 @@ def test_collector_rejects_dot_and_compose_normalized_run_ids(
         assert completed.returncode == 80
 
 
-def test_collector_preserves_placeholder_as_not_evaluated(tmp_path: Path) -> None:
+def test_collector_evaluates_the_complete_frozen_portal_infrastructure_inventory(
+    tmp_path: Path,
+) -> None:
     run_root = tmp_path / "run-infra"
     _write_portal_junit(run_root)
 
@@ -423,11 +1096,127 @@ def test_collector_preserves_placeholder_as_not_evaluated(tmp_path: Path) -> Non
 
     assert completed.returncode == 0, completed.stderr
     summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
-    assert summary["status"] == "INFRA_PASS"
-    assert summary["counts"]["passed"] == 0
-    assert summary["counts"]["not_evaluated"] == 8
+    assert summary["status"] == "PASS"
+    assert summary["counts"]["passed"] == 8
+    assert summary["counts"]["not_evaluated"] == 0
     assert summary["cases"][0]["execution_status"] == "PASSED"
-    assert summary["cases"][0]["status"] == "NOT_EVALUATED"
+    assert summary["cases"][0]["status"] == "PASSED"
+
+
+def test_collector_does_not_treat_the_failure_probe_junit_as_acceptance_cases(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-infra-with-probe"
+    _write_portal_junit(run_root)
+    probe_root = run_root / "portal-e2e" / "execution-probe"
+    probe_root.mkdir(parents=True, exist_ok=True)
+    (probe_root / "junit.xml").write_text(
+        """<testsuite tests="1" failures="1">
+<testcase classname="failure-probe" name="deterministic injected failure">
+<failure message="intentional probe failure" />
+</testcase></testsuite>""",
+        encoding="utf-8",
+    )
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 0, completed.stderr
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["counts"]["total"] == 8
+    assert summary["counts"]["failed"] == 0
+
+
+def test_collector_rejects_missing_outer_infrastructure_evidence(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-infra-no-outer-evidence"
+    _write_portal_junit(run_root)
+    (run_root / "portal-e2e" / "infrastructure-evidence.json").unlink()
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "FAIL"
+    assert "required artifact is missing: portal-e2e/infrastructure-evidence.json" in summary[
+        "artifact_errors"
+    ]
+    failed_ids = {
+        case["test_case_id"]
+        for case in summary["cases"]
+        if case["status"] == "FAILED"
+    }
+    assert failed_ids == {
+        "SECURITY-001",
+        "SECURITY-002",
+        "SECURITY-003",
+        "EXECUTION-004",
+        "ARTIFACT-001",
+    }
+    canonical_junit = next((run_root / "junit").glob("*.xml"))
+    junit_tree = ET.parse(canonical_junit)
+    junit_security_001 = next(
+        testcase
+        for testcase in junit_tree.getroot().iter("testcase")
+        if any(
+            prop.get("name") == "test_case_id"
+            and prop.get("value") == "SECURITY-001"
+            for prop in testcase.findall("./properties/property")
+        )
+    )
+    assert junit_security_001.find("failure") is not None
+
+
+def test_collector_rejects_partial_outer_expected_field_evidence(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-infra-partial-outer-evidence"
+    _write_portal_junit(run_root)
+    evidence_path = run_root / "portal-e2e/infrastructure-evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["cases"]["SECURITY-002"].pop("can_connect_hermes")
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert (
+        "SECURITY-002 outer evidence can_connect_hermes must equal False"
+        in summary["artifact_errors"]
+    )
+    failed = [
+        case["test_case_id"]
+        for case in summary["cases"]
+        if case["status"] == "FAILED"
+    ]
+    assert failed == ["SECURITY-002"]
+
+
+def test_collector_rejects_missing_security_001_running_precondition(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-infra-controller-not-running"
+    _write_portal_junit(run_root)
+    evidence_path = run_root / "portal-e2e" / "infrastructure-evidence.json"
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["cases"]["SECURITY-001"]["controller_running"] = False
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert (
+        "SECURITY-001 outer evidence controller_running must equal True"
+        in summary["artifact_errors"]
+    )
+    failed = [
+        case["test_case_id"]
+        for case in summary["cases"]
+        if case["status"] == "FAILED"
+    ]
+    assert failed == ["SECURITY-001"]
 
 
 def test_collector_fails_for_zero_testcase_junit(tmp_path: Path) -> None:
@@ -547,6 +1336,75 @@ def test_collector_fails_when_runner_status_disagrees_with_junit(
     assert any("source_tree_unchanged" in error for error in summary["artifact_errors"])
 
 
+def test_collector_requires_each_runtime_engine_evidence_artifact(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-missing-runtime-engine-evidence"
+    _write_junit(run_root)
+    missing = run_root / "controller-e2e/docker-snapshots/evidence-RUNTIME-017.json"
+    missing.unlink()
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert (
+        "required artifact is missing: "
+        "controller-e2e/docker-snapshots/evidence-RUNTIME-017.json"
+    ) in summary["artifact_errors"]
+    runtime_017 = next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-017"
+    )
+    assert runtime_017["status"] == "FAILED"
+
+
+def test_collector_requires_each_runtime_phase_log_and_http_trace(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-missing-runtime-phase-artifact"
+    _write_junit(run_root)
+    (run_root / "controller-e2e/logs/controller-runtime-017.log").unlink()
+    (run_root / "controller-e2e/runtime-017/http-trace.jsonl").unlink()
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert (
+        "required artifact is missing: "
+        "controller-e2e/logs/controller-runtime-017.log"
+    ) in summary["artifact_errors"]
+    assert (
+        "required artifact is missing: "
+        "controller-e2e/runtime-017/http-trace.jsonl"
+    ) in summary["artifact_errors"]
+
+
+def test_collector_rejects_runtime_008_winner_evidence_drift(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-runtime-008-winner-drift"
+    _write_junit(run_root)
+    context_path = run_root / "controller-e2e/runtime-008/engine-context.json"
+    context_path.write_text(
+        '{"test_case_id":"RUNTIME-008","winning_action":"STOP"}\n',
+        encoding="utf-8",
+    )
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert (
+        "RUNTIME-008 Engine evidence winner differs from API context"
+        in summary["artifact_errors"]
+    )
+    runtime_008 = next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-008"
+    )
+    assert runtime_008["status"] == "FAILED"
+
+
 def test_collector_rejects_symbolic_link_artifacts(tmp_path: Path) -> None:
     run_root = tmp_path / "run-symlink"
     _write_junit(run_root)
@@ -565,7 +1423,7 @@ def test_collector_rejects_an_incomplete_suite_inventory(tmp_path: Path) -> None
     junit_path = run_root / "junit" / "controller.xml"
     tree = ET.parse(junit_path)
     root = tree.getroot()
-    root.remove(list(root.findall("testcase"))[-1])
+    root.remove(list(root.findall("testcase"))[-2])
     tree.write(junit_path, encoding="utf-8", xml_declaration=True)
 
     completed = _run_collector(tmp_path, "run-incomplete")
@@ -583,7 +1441,7 @@ def test_collector_rejects_duplicate_case_ids(tmp_path: Path) -> None:
     junit_path = run_root / "junit" / "controller.xml"
     tree = ET.parse(junit_path)
     root = tree.getroot()
-    root.append(deepcopy(root.find("testcase")))
+    root.append(deepcopy(root.findall("testcase")[1]))
     tree.write(junit_path, encoding="utf-8", xml_declaration=True)
 
     completed = _run_collector(tmp_path, "run-duplicate")

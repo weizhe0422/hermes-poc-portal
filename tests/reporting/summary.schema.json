@@ -23,10 +23,13 @@
     "secret_findings"
   ],
   "properties": {
-    "schema_version": {"const": "0.1.0"},
+    "schema_version": {"const": "0.2.0"},
     "role": {"const": "independent-test-implementer"},
     "run_id": {"type": "string", "minLength": 1},
-    "status": {"type": "string", "enum": ["PASS", "INFRA_PASS", "FAIL"]},
+    "status": {
+      "type": "string",
+      "enum": ["PASS", "INFRA_PASS", "FAIL", "CONTRACT_BLOCKED"]
+    },
     "fixture_type": {"const": "SYNTHETIC"},
     "counts": {
       "type": "object",
@@ -37,7 +40,9 @@
         "passed": {"type": "integer", "minimum": 0},
         "failed": {"type": "integer", "minimum": 0},
         "skipped": {"type": "integer", "minimum": 0},
-        "not_evaluated": {"type": "integer", "minimum": 0}
+        "not_evaluated": {"type": "integer", "minimum": 0},
+        "blocked_by_contract": {"type": "integer", "minimum": 0},
+        "deferred_by_milestone": {"type": "integer", "minimum": 0}
       }
     },
     "critical_not_passed": {"type": "array", "items": {"type": "string"}},
@@ -71,6 +76,10 @@
         "golden_status",
         "evidence_kind",
         "engine_evidence",
+        "engine_evidence_file",
+        "outer_evidence",
+        "outer_evidence_file",
+        "failure_classification",
         "name",
         "classname",
         "duration_seconds",
@@ -88,7 +97,14 @@
         "critical_metadata": {"type": "string"},
         "status": {
           "type": "string",
-          "enum": ["PASSED", "FAILED", "SKIPPED", "NOT_EVALUATED"]
+          "enum": [
+            "PASSED",
+            "FAILED",
+            "SKIPPED",
+            "NOT_EVALUATED",
+            "BLOCKED_BY_CONTRACT",
+            "DEFERRED_BY_MILESTONE"
+          ]
         },
         "execution_status": {
           "type": "string",
@@ -100,6 +116,10 @@
         "golden_status": {"type": "string"},
         "evidence_kind": {"type": "string"},
         "engine_evidence": {"type": ["string", "null"]},
+        "engine_evidence_file": {"type": ["string", "null"]},
+        "outer_evidence": {"type": ["string", "null"]},
+        "outer_evidence_file": {"type": ["string", "null"]},
+        "failure_classification": {"type": "string"},
         "name": {"type": "string"},
         "classname": {"type": "string"},
         "duration_seconds": {"type": "number", "minimum": 0},

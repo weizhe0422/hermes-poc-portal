@@ -9,6 +9,10 @@ class ContractViolation(ControllerE2EError, AssertionError):
     """The service response does not satisfy the published contract."""
 
 
+class ContractAmbiguity(ContractViolation):
+    """Frozen inputs do not publish enough mapping to determine a verdict."""
+
+
 class ExpectedResultMismatch(ControllerE2EError, AssertionError):
     """A valid response differs from the Bundle test-case expectation."""
 
@@ -31,3 +35,15 @@ def require_equal(actual: object, expected: object, label: str) -> None:
         raise ExpectedResultMismatch(
             f"{label}: expected {expected!r}, received {actual!r}"
         )
+
+
+def require_forbidden_values_absent(
+    serialized: str, forbidden_values: tuple[str, ...], label: str
+) -> None:
+    """Fail without copying a forbidden value into JUnit or log artifacts."""
+
+    for index, forbidden in enumerate(forbidden_values):
+        if forbidden in serialized:
+            raise ExpectedResultMismatch(
+                f"{label}: response contains forbidden value at index {index}"
+            )

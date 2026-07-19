@@ -36,6 +36,10 @@ services:
         source: ./scripts/verify-controller-e2e-engine
         target: /bootstrap/verify-controller-e2e-engine
         read_only: true
+      - type: bind
+        source: ./scripts/prepare-controller-e2e-engine
+        target: /bootstrap/prepare-controller-e2e-engine
+        read_only: true
     healthcheck:
       test: ["CMD", "docker", "info"]
       interval: 2s
@@ -84,11 +88,16 @@ services:
       RUN_ID: ${RUN_ID:-local}
       RUNTIME_INSTANCE_ID: ${RUNTIME_INSTANCE_ID:-hermes-fixture-001}
       PERSISTENT_INSTANCE_ID: ${PERSISTENT_INSTANCE_ID:-hermes-fixture-persistent}
+      CONTRACT_TAG: ${CONTRACT_TAG:-contract-m0-m1-v0.2.0}
+      CONTRACT_COMMIT: ${CONTRACT_COMMIT:-}
+      CONTRACT_VERSION: ${CONTRACT_VERSION:-0.2.0}
+      TRACE_REDACT_VALUES: ${TRACE_REDACT_VALUES:-TEST_SECRET_123456}
       E2E_HTTP_TIMEOUT_SECONDS: ${E2E_HTTP_TIMEOUT_SECONDS:-10}
       CONTROLLER_READY_TIMEOUT_SECONDS: ${CONTROLLER_READY_TIMEOUT_SECONDS:-60}
       HERMES_START_TIMEOUT_SECONDS: ${HERMES_START_TIMEOUT_SECONDS:-30}
       HERMES_STOP_TIMEOUT_SECONDS: ${HERMES_STOP_TIMEOUT_SECONDS:-15}
       E2E_DEADLINE_GRACE_SECONDS: ${E2E_DEADLINE_GRACE_SECONDS:-5}
+      E2E_SETUP_BLOCKER: ${E2E_SETUP_BLOCKER:-}
       POLL_INITIAL_INTERVAL_SECONDS: ${POLL_INITIAL_INTERVAL_SECONDS:-0.1}
       POLL_MAX_INTERVAL_SECONDS: ${POLL_MAX_INTERVAL_SECONDS:-1.0}
       POLL_BACKOFF_MULTIPLIER: ${POLL_BACKOFF_MULTIPLIER:-1.5}
@@ -103,9 +112,9 @@ services:
         source: ./hermes-poc-specification-v0.1
         target: /spec
         read_only: true
-      - type: bind
-        source: ${TEST_RUN_RESULTS_DIR:-./test-results/${RUN_ID:-local}}
-        target: /test-results/${RUN_ID:-local}
+      - type: volume
+        source: test-results
+        target: /test-results
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
@@ -121,4 +130,6 @@ networks:
 
 volumes:
   docker-engine-data:
+    labels: *test-labels
+  test-results:
     labels: *test-labels

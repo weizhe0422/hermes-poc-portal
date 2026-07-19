@@ -15,9 +15,25 @@ runtime_fixture:
     - PERSISTENT
   t_m1_instances:
     - instance_id: hermes-fixture-001
-      mode: HEALTHY
+      mode: HEALTHY; recreated as SLOW_START for RUNTIME-017 only
       initial_state: stopped
-      test_case_ids: [RUNTIME-001, RUNTIME-003, RUNTIME-006]
+      persistent_volume: hermes-fixture-core-state-<run-id>
+      test_case_ids: [RUNTIME-001, RUNTIME-003, RUNTIME-004, RUNTIME-005, RUNTIME-006, RUNTIME-007, RUNTIME-017]
+    - instance_id: hermes-fixture-slow
+      mode: SLOW_START
+      initial_state: stopped
+      start_delay_seconds: 10
+      test_case_ids: [RUNTIME-008, RUNTIME-009]
+    - instance_id: unmanaged-fixture-001
+      mode: HEALTHY
+      managed_label: absent by design
+      initial_state: running
+      test_case_ids: [RUNTIME-012]
+    - instance_id: hermes-fixture-secret
+      mode: SECRET_LOG
+      initial_state: running
+      synthetic_secret: TEST_SECRET_123456
+      test_case_ids: [RUNTIME-013]
     - instance_id: hermes-fixture-persistent
       mode: PERSISTENT
       initial_state: running

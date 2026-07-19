@@ -14,6 +14,7 @@ import yaml
 
 from .artifacts import redact
 from .errors import (
+    ContractAmbiguity,
     ContractViolation,
     EnvironmentBlocker,
     ExpectedResultMismatch,
@@ -21,31 +22,14 @@ from .errors import (
 )
 
 
-COVERAGE_GAPS = (
-    {
-        "test_case_id": "RUNTIME-004",
-        "requirement_ids": ["RT-04"],
-        "classification": "COVERAGE_GAP",
-        "reason": "Traceability matrix references the case, but runtime/cases.yaml has no approved Expected Result.",
-    },
-    {
-        "test_case_id": "RUNTIME-005",
-        "requirement_ids": ["RT-05"],
-        "classification": "COVERAGE_GAP",
-        "reason": "Basic Restart case is absent; RUNTIME-014 is persistence-specific and does not replace it.",
-    },
-    {
-        "test_case_id": "RUNTIME-007",
-        "requirement_ids": ["RT-06"],
-        "classification": "COVERAGE_GAP",
-        "reason": "Stop/Restart idempotency has no approved runtime case Expected Result.",
-    },
-)
+COVERAGE_GAPS: tuple[dict[str, Any], ...] = ()
 
 
 def _failure_classification(exception: BaseException | None) -> str:
     if exception is None:
         return "NONE"
+    if isinstance(exception, ContractAmbiguity):
+        return "BLOCKED_BY_CONTRACT"
     if isinstance(exception, ContractViolation):
         return "CONTRACT_VIOLATION"
     if isinstance(exception, ExpectedResultMismatch):
@@ -53,7 +37,7 @@ def _failure_classification(exception: BaseException | None) -> str:
     if isinstance(exception, TransportFailure):
         return "TRANSPORT_FAILURE"
     if isinstance(exception, EnvironmentBlocker):
-        return "ENVIRONMENT_BLOCKER"
+        return "BLOCKED_BY_ENVIRONMENT"
     if isinstance(exception, AssertionError):
         return "ASSERTION_FAILURE"
     return "TEST_IMPLEMENTATION_ERROR"
@@ -87,10 +71,10 @@ def pytest_collection_modifyitems(
                 ("critical", str(critical).lower()),
                 ("milestone", "T-M1"),
                 ("retry_policy", "NO_RETRY"),
-                ("hermes.case_source", "bundle-runtime-case"),
-                ("hermes.coverage_claim", "case-level-partial"),
+                ("hermes.case_source", "frozen-runtime-case"),
+                ("hermes.coverage_claim", "case-level"),
                 ("hermes.acceptance_status", "case-evaluated"),
-                ("hermes.golden_status", "bundle-draft-runtime-case"),
+                ("hermes.golden_status", "frozen-v0.2.0"),
                 ("hermes.evidence_kind", "black-box"),
             ]
         )
@@ -206,6 +190,10 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
         "failed": sum(result["status"] == "FAIL" for result in results),
         "skipped": sum(result["status"] == "SKIP" for result in results),
         "not_run": sum(result["status"] == "NOT_RUN" for result in results),
+        "blocked_by_contract": sum(
+            result["failure_classification"] == "BLOCKED_BY_CONTRACT"
+            for result in results
+        ),
     }
     spec_root = Path(os.getenv("SPEC_ROOT", "/spec")).resolve()
     results_dir = Path(os.getenv("RESULTS_DIR", "/test-results")).resolve()
@@ -213,6 +201,8 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
     overall_status = "PASS" if exitstatus == 0 and results else "FAIL"
     if not results:
         overall_status = "NOT_EXECUTED"
+    elif counts["failed"] and counts["failed"] == counts["blocked_by_contract"]:
+        overall_status = "CONTRACT_BLOCKED"
     summary = {
         "role": "independent-test-implementer",
         "milestone": "T-M1",
@@ -231,20 +221,24 @@ def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
                 if requirement
             }
         ),
-        "requirement_acceptance_claim": "PARTIAL_CASE_TRACE_ONLY",
+        "requirement_acceptance_claim": "FROZEN_CASE_LEVEL",
         "critical_cases": [
             result["properties"].get("test_case_id")
             for result in results
             if result["properties"].get("critical") == "true"
         ],
         "coverage_gaps": list(COVERAGE_GAPS),
-        "known_flakiness": [],
+        "known_flakiness": [
+            "RUNTIME-008 uses a simultaneous two-thread barrier; the Frozen case does not specify request ordering, so a Stop-first scheduler outcome is reported rather than retried."
+        ],
         "contract_questions": [
-            "RT-06 requires Restart idempotency, but the state machine defines no Restart idempotent response."
+            "RUNTIME-009 expected.error_code has no published mapping to AgentInstance.last_error_code.",
+            "RUNTIME-008 freezes one accepted operation plus one conflict but does not define which concurrent request must win.",
+            "Frozen versions.yaml includes RUNTIME-008/009/012/013 in M0/M1 while the legacy work packet labels them T-M2.",
         ],
         "assumptions": [
-            "RUNTIME-014 final HEALTHY is persistence evidence only because the fixture gates health on its persistent marker.",
-            "RUNTIME-006 uses the stable managed-instance registry as its API evidence; the outer isolated-engine harness supplies independent Docker event/snapshot evidence.",
+            "Engine-only fields such as container identity, event counts, and volume markers are attached by the external isolated-Docker orchestrator.",
+            "Polling is bounded state observation and every Critical case has retry_policy=NO_RETRY.",
         ],
         "artifact_formats": ["JUnit XML", "JSON", "Markdown", "HTTP trace JSONL"],
         "versions": _versions(spec_root),

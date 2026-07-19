@@ -40,6 +40,14 @@ def error_response(error_code="DOCKER_UNAVAILABLE", **overrides):
     return payload
 
 
+def lifecycle_operation(action: str) -> dict[str, str]:
+    return {
+        "operation_id": "operation-001",
+        "action": action,
+        "started_at": "2026-01-01T00:00:00Z",
+    }
+
+
 def test_validates_external_agent_instance_references(spec_root):
     contracts = ContractBundle(spec_root)
 
@@ -122,3 +130,80 @@ def test_restart_success_status_comes_from_openapi(spec_root):
         "UNHEALTHY",
         "ERROR",
     )
+
+
+def test_concurrent_winner_outcomes_come_from_frozen_state_machine(spec_root):
+    contracts = ContractBundle(spec_root)
+
+    assert contracts.lifecycle_request_outcome("STOPPED", "START") == {
+        "http_status": 202,
+        "state": "STARTING",
+        "operation_action": "START",
+    }
+    assert contracts.lifecycle_request_outcome("STOPPED", "STOP") == {
+        "http_status": 200,
+        "state": "STOPPED",
+        "operation_action": None,
+    }
+
+
+def test_lifecycle_request_outcome_rejects_unpublished_combination(spec_root):
+    contracts = ContractBundle(spec_root)
+
+    with pytest.raises(ContractViolation, match="one unique outcome"):
+        contracts.lifecycle_request_outcome("STOPPED", "RESTART")
+
+
+@pytest.mark.parametrize(
+    ("operation_id", "state", "action"),
+    (
+        ("startManagedInstance", "STARTING", "START"),
+        ("stopManagedInstance", "STOPPING", "STOP"),
+        ("restartManagedInstance", "STOPPING", "RESTART"),
+        ("restartManagedInstance", "STARTING", "RESTART"),
+    ),
+)
+def test_frozen_accepted_response_enforces_state_and_action(
+    spec_root,
+    operation_id,
+    state,
+    action,
+):
+    contracts = ContractBundle(spec_root)
+    payload = agent_instance(
+        state=state,
+        operation=lifecycle_operation(action),
+    )
+
+    contracts.validate_response(operation_id, 202, payload)
+
+    with pytest.raises(ContractViolation, match="violates response schema"):
+        contracts.validate_response(
+            operation_id,
+            202,
+            {**payload, "state": "HEALTHY"},
+        )
+    with pytest.raises(ContractViolation, match="violates response schema"):
+        contracts.validate_response(
+            operation_id,
+            202,
+            {
+                **payload,
+                "operation": lifecycle_operation(
+                    "STOP" if action == "RESTART" else "RESTART"
+                ),
+            },
+        )
+
+
+def test_resource_state_error_expected_requires_a_published_field_mapping(spec_root):
+    contracts = ContractBundle(spec_root)
+
+    with pytest.raises(
+        ContractViolation,
+        match=r"expected\.error_code.*last_error_code.*no published mapping",
+    ):
+        contracts.resource_state_error_field(
+            expected_key="error_code",
+            error_code="RUNTIME_START_TIMEOUT",
+        )

@@ -78,3 +78,23 @@ def test_client_rejects_a_json_lookalike_media_type(spec_root, tmp_path):
     with _client(spec_root, tmp_path, handler) as client:
         with pytest.raises(ContractViolation, match="application/json"):
             client.get_instance("hermes-fixture-001")
+
+
+def test_client_sends_frozen_tail_query_for_managed_logs(spec_root, tmp_path):
+    def handler(request):
+        assert request.url.path == "/v1/instances/hermes-fixture-secret/logs"
+        assert request.url.params.get("tail") == "200"
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json"},
+            json={
+                "instance_id": "hermes-fixture-secret",
+                "lines": ["token=[REDACTED]"],
+                "redacted": True,
+            },
+        )
+
+    with _client(spec_root, tmp_path, handler) as client:
+        response = client.get_instance_logs("hermes-fixture-secret", tail=200)
+
+    assert response.status_code == 200

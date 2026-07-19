@@ -1,4 +1,4 @@
-import { copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 import type {
@@ -8,11 +8,13 @@ import type {
   TestResult,
 } from '@playwright/test/reporter';
 
-import { MATRIX_PLACEHOLDER_ANNOTATIONS } from '../support/matrix-placeholder';
+import { requiredContractProvenance } from '../support/environment';
+import { FROZEN_INFRASTRUCTURE_ANNOTATIONS } from '../support/infrastructure-cases';
 
 interface ReporterOptions {
   outputFile: string;
   resultsDir: string;
+  summaryFile: string;
 }
 
 interface AttachmentRecord {
@@ -34,7 +36,21 @@ interface CaseExecutionRecord {
   golden_status: string;
   requirement_ids: string[];
   retry: number;
+  runner_subset_status: string;
+  observed_fields: string[];
+  observation_path: string;
   title: string;
+  unobserved_fields: string[];
+}
+
+interface RunnerObservation {
+  observed_fields?: string[];
+  runner_subset_status?: string;
+  unobserved_fields?: string[];
+}
+
+interface RunnerObservationAggregate {
+  cases?: Record<string, RunnerObservation>;
 }
 
 function annotationValues(test: TestCase, type: string): string[] {
@@ -82,7 +98,7 @@ export default class HermesMetadataReporter implements Reporter {
   async onTestEnd(test: TestCase, result: TestResult): Promise<void> {
     const caseId = annotationValue(
       test,
-      MATRIX_PLACEHOLDER_ANNOTATIONS.caseId,
+      FROZEN_INFRASTRUCTURE_ANNOTATIONS.caseId,
     );
     const copiedAttachments: AttachmentRecord[] = [];
 
@@ -124,57 +140,88 @@ export default class HermesMetadataReporter implements Reporter {
     this.records.push({
       acceptance_status: annotationValue(
         test,
-        MATRIX_PLACEHOLDER_ANNOTATIONS.acceptanceStatus,
+        FROZEN_INFRASTRUCTURE_ANNOTATIONS.acceptanceStatus,
       ),
       attachments: copiedAttachments,
       case_id: caseId,
       case_source: annotationValue(
         test,
-        MATRIX_PLACEHOLDER_ANNOTATIONS.caseSource,
+        FROZEN_INFRASTRUCTURE_ANNOTATIONS.caseSource,
       ),
       coverage_claim: annotationValue(
         test,
-        MATRIX_PLACEHOLDER_ANNOTATIONS.coverageClaim,
+        FROZEN_INFRASTRUCTURE_ANNOTATIONS.coverageClaim,
       ),
       duration_ms: result.duration,
       evidence_kind: annotationValue(
         test,
-        MATRIX_PLACEHOLDER_ANNOTATIONS.evidenceKind,
+        FROZEN_INFRASTRUCTURE_ANNOTATIONS.evidenceKind,
       ),
       execution_status: result.status,
       file: test.location.file,
       golden_status: annotationValue(
         test,
-        MATRIX_PLACEHOLDER_ANNOTATIONS.goldenStatus,
+        FROZEN_INFRASTRUCTURE_ANNOTATIONS.goldenStatus,
       ),
       requirement_ids: annotationValues(
         test,
-        MATRIX_PLACEHOLDER_ANNOTATIONS.requirementId,
+        FROZEN_INFRASTRUCTURE_ANNOTATIONS.requirementId,
       ),
       retry: result.retry,
+      runner_subset_status: 'MISSING',
+      observed_fields: [],
+      observation_path: `evidence/${caseId}.json`,
       title: test.titlePath().join(' > '),
+      unobserved_fields: [],
     });
   }
 
   async onEnd(result: FullResult): Promise<void> {
+    const observationFile = path.join(
+      this.options.resultsDir,
+      'runner-observations.json',
+    );
+    let observations: RunnerObservationAggregate = {};
+    try {
+      observations = JSON.parse(
+        await readFile(observationFile, 'utf8'),
+      ) as RunnerObservationAggregate;
+    } catch {
+      observations = {};
+    }
+    for (const record of this.records) {
+      const observation = observations.cases?.[record.case_id];
+      record.runner_subset_status =
+        observation?.runner_subset_status ?? 'MISSING';
+      record.observed_fields = observation?.observed_fields ?? [];
+      record.unobserved_fields = observation?.unobserved_fields ?? [];
+    }
+    const provenance = requiredContractProvenance('0.2.0');
     const payload = {
       schema_version: '1.0.0',
-      report_type: 'hermes.portal-e2e.matrix-placeholder-execution',
+      report_type: 'hermes.portal-e2e.frozen-infrastructure-execution',
       generated_at: new Date().toISOString(),
+      ...provenance,
       suite_status: result.status,
       acceptance: {
-        coverage_claim: 'none',
-        golden_status: 'not-applicable',
-        note: 'Passing placeholder checks are runner evidence only; they are not Contract or Golden Case acceptance.',
+        coverage_claim: 'case-level',
+        golden_status: 'frozen-v0.2.0',
+        note: 'Runner observations are compared to Frozen Expected field-by-field. Host and post-exit fields require outer evidence before the final Acceptance verdict.',
       },
+      runner_observation_file: 'runner-observations.json',
       cases: this.records,
     };
 
-    await mkdir(path.dirname(this.options.outputFile), { recursive: true });
-    await writeFile(
+    for (const destination of [
       this.options.outputFile,
-      `${JSON.stringify(payload, null, 2)}\n`,
-      'utf8',
-    );
+      this.options.summaryFile,
+    ]) {
+      await mkdir(path.dirname(destination), { recursive: true });
+      await writeFile(
+        destination,
+        `${JSON.stringify(payload, null, 2)}\n`,
+        'utf8',
+      );
+    }
   }
 }

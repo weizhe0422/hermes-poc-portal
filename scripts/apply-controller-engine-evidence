@@ -46,9 +46,20 @@ def main() -> int:
 
     case_id = evidence.get("test_case_id")
     verdict = evidence.get("verdict")
-    if case_id not in {"RUNTIME-003", "RUNTIME-006", "RUNTIME-014"} or not isinstance(
-        verdict, bool
-    ):
+    engine_cases = {
+        "RUNTIME-003",
+        "RUNTIME-004",
+        "RUNTIME-005",
+        "RUNTIME-006",
+        "RUNTIME-007",
+        "RUNTIME-008",
+        "RUNTIME-009",
+        "RUNTIME-012",
+        "RUNTIME-013",
+        "RUNTIME-014",
+        "RUNTIME-017",
+    }
+    if case_id not in engine_cases or not isinstance(verdict, bool):
         print("engine evidence has an invalid case or verdict", file=sys.stderr)
         return 80
 
@@ -66,7 +77,7 @@ def main() -> int:
     for name, value in (
         ("engine_evidence", "PASS" if verdict else "FAIL"),
         ("engine_evidence_file", evidence_path.name),
-        ("engine_evidence_phase", str(evidence.get("phase", "unknown"))),
+        ("engine_evidence_phase", str(evidence.get("phase", case_id))),
     ):
         ET.SubElement(properties, "property", name=name, value=value)
 

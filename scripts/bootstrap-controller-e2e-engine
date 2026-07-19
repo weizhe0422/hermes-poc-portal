@@ -5,6 +5,9 @@ run_id=${1:?run_id is required}
 fixture_image=${2:?fixture image is required}
 runtime_instance_id=${3:-hermes-fixture-001}
 persistent_instance_id=${4:-hermes-fixture-persistent}
+slow_instance_id=${5:-hermes-fixture-slow}
+unmanaged_instance_id=${6:-unmanaged-fixture-001}
+secret_instance_id=${7:-hermes-fixture-secret}
 
 case "$run_id" in
   ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
@@ -14,9 +17,21 @@ case "$run_id" in
 esac
 if [ "${#run_id}" -gt 63 ]; then echo "invalid run_id" >&2; exit 70; fi
 
-managed_label=poc.managed=true
+for instance_id in \
+  "$runtime_instance_id" \
+  "$persistent_instance_id" \
+  "$slow_instance_id" \
+  "$unmanaged_instance_id" \
+  "$secret_instance_id"; do
+  case "$instance_id" in
+    ''|*[!A-Za-z0-9_.-]*) echo "invalid fixture instance id" >&2; exit 70 ;;
+  esac
+done
+
 fixture_network="hermes-fixture-network-$run_id"
+core_volume="hermes-fixture-core-state-$run_id"
 persistent_volume="hermes-fixture-state-$run_id"
+core_marker="RUNTIME-004-VOLUME-$run_id"
 persistent_marker="PERSISTENT_MARKER_$run_id"
 
 existing_containers=$(docker ps -aq --filter "label=poc.test-run=$run_id")
@@ -53,29 +68,40 @@ if docker network inspect "$fixture_network" >/dev/null 2>&1; then
   docker network rm "$fixture_network" >/dev/null
 fi
 
-if docker volume inspect "$persistent_volume" >/dev/null 2>&1; then
-  echo "refusing to reuse an unverified volume named $persistent_volume" >&2
-  exit 70
-fi
-
 docker network create \
   --label "poc.test-run=$run_id" \
   --label poc.fixture=true \
   "$fixture_network" >/dev/null
 
-docker volume create \
+for volume_name in "$core_volume" "$persistent_volume"; do
+  docker volume create \
+    --label "poc.test-run=$run_id" \
+    --label poc.fixture=true \
+    "$volume_name" >/dev/null
+done
+
+# Seed an immutable synthetic marker before any Controller lifecycle action. The
+# marker is evidence for RUNTIME-004 volume preservation; it is never returned
+# by the Controller API.
+docker run --rm \
+  --user 0:0 \
+  --entrypoint /bin/sh \
   --label "poc.test-run=$run_id" \
   --label poc.fixture=true \
-  "$persistent_volume" >/dev/null
+  --env "CORE_MARKER=$core_marker" \
+  --volume "$core_volume:/state" \
+  "$fixture_image" \
+  -c 'umask 077; printf "%s" "$CORE_MARKER" > /state/runtime-004.marker' >/dev/null
 
 docker create \
   --name "$runtime_instance_id" \
   --hostname "$runtime_instance_id" \
-  --label "$managed_label" \
+  --label poc.managed=true \
   --label "poc.test-run=$run_id" \
   --label poc.fixture=true \
   --network "$fixture_network" \
   --publish 8000:8000 \
+  --volume "$core_volume:/runtime-state" \
   --env FIXTURE_MODE=HEALTHY \
   --env FIXTURE_INSTANCE_ID="$runtime_instance_id" \
   --env FIXTURE_RUN_ID="$run_id" \
@@ -86,7 +112,7 @@ docker create \
 docker create \
   --name "$persistent_instance_id" \
   --hostname "$persistent_instance_id" \
-  --label "$managed_label" \
+  --label poc.managed=true \
   --label "poc.test-run=$run_id" \
   --label poc.fixture=true \
   --network "$fixture_network" \
@@ -101,7 +127,55 @@ docker create \
   --env FIXTURE_MARKER_VALUE="$persistent_marker" \
   "$fixture_image" >/dev/null
 
-docker start "$persistent_instance_id" >/dev/null
+docker create \
+  --name "$slow_instance_id" \
+  --hostname "$slow_instance_id" \
+  --label poc.managed=true \
+  --label "poc.test-run=$run_id" \
+  --label poc.fixture=true \
+  --network "$fixture_network" \
+  --publish 8002:8000 \
+  --env FIXTURE_MODE=SLOW_START \
+  --env FIXTURE_START_DELAY_SECONDS=10 \
+  --env FIXTURE_INSTANCE_ID="$slow_instance_id" \
+  --env FIXTURE_RUN_ID="$run_id" \
+  --env FIXTURE_MODEL_NAME=synthetic-fixture-model \
+  --env FIXTURE_CLASSIFICATION=SYNTHETIC_TEST_ONLY \
+  "$fixture_image" >/dev/null
+
+# Deliberately omit poc.managed=true. This is the fixed negative fixture for
+# RUNTIME-012 and must remain alive after the forbidden Stop request.
+docker create \
+  --name "$unmanaged_instance_id" \
+  --hostname "$unmanaged_instance_id" \
+  --label "poc.test-run=$run_id" \
+  --label poc.fixture=true \
+  --network "$fixture_network" \
+  --publish 8003:8000 \
+  --env FIXTURE_MODE=HEALTHY \
+  --env FIXTURE_INSTANCE_ID="$unmanaged_instance_id" \
+  --env FIXTURE_RUN_ID="$run_id" \
+  --env FIXTURE_MODEL_NAME=synthetic-fixture-model \
+  --env FIXTURE_CLASSIFICATION=SYNTHETIC_TEST_ONLY \
+  "$fixture_image" >/dev/null
+
+docker create \
+  --name "$secret_instance_id" \
+  --hostname "$secret_instance_id" \
+  --label poc.managed=true \
+  --label "poc.test-run=$run_id" \
+  --label poc.fixture=true \
+  --network "$fixture_network" \
+  --publish 8004:8000 \
+  --env FIXTURE_MODE=SECRET_LOG \
+  --env FIXTURE_TEST_SECRET=TEST_SECRET_123456 \
+  --env FIXTURE_INSTANCE_ID="$secret_instance_id" \
+  --env FIXTURE_RUN_ID="$run_id" \
+  --env FIXTURE_MODEL_NAME=synthetic-fixture-model \
+  --env FIXTURE_CLASSIFICATION=SYNTHETIC_TEST_ONLY \
+  "$fixture_image" >/dev/null
+
+docker start "$persistent_instance_id" "$unmanaged_instance_id" "$secret_instance_id" >/dev/null
 
 attempt=0
 until docker exec "$persistent_instance_id" python -c \
@@ -115,4 +189,4 @@ until docker exec "$persistent_instance_id" python -c \
   sleep 0.1
 done
 
-echo "bootstrapped run-scoped fixtures for $run_id"
+echo "bootstrapped five run-scoped fixtures for $run_id"

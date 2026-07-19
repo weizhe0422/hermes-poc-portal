@@ -1,0 +1,85 @@
+#!/bin/sh
+set -eu
+
+run_id=${1:?run_id is required}
+fixture_image=${2:?fixture image is required}
+action=${3:?action is required}
+instance_id=${4:?instance_id is required}
+
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9]) echo "invalid run_id" >&2; exit 70 ;;
+esac
+case "$instance_id" in
+  ''|*[!A-Za-z0-9_.-]*) echo "invalid instance_id" >&2; exit 70 ;;
+esac
+
+verify_fixture() {
+  inspected_run=$(docker inspect --format '{{index .Config.Labels "poc.test-run"}}' "$instance_id" 2>/dev/null || true)
+  inspected_fixture=$(docker inspect --format '{{index .Config.Labels "poc.fixture"}}' "$instance_id" 2>/dev/null || true)
+  if [ "$inspected_run" != "$run_id" ] || [ "$inspected_fixture" != true ]; then
+    echo "refusing to prepare a container outside run $run_id" >&2
+    exit 70
+  fi
+}
+
+stop_fixture() {
+  verify_fixture
+  if [ "$(docker inspect --format '{{.State.Running}}' "$instance_id")" = true ]; then
+    docker stop --time 5 "$instance_id" >/dev/null
+  fi
+}
+
+start_and_wait_healthy() {
+  verify_fixture
+  if [ "$(docker inspect --format '{{.State.Running}}' "$instance_id")" != true ]; then
+    docker start "$instance_id" >/dev/null
+  fi
+  attempt=0
+  until [ "$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}missing{{end}}' "$instance_id")" = healthy ]; do
+    attempt=$((attempt + 1))
+    if [ "$attempt" -ge 200 ]; then
+      echo "$instance_id did not become healthy" >&2
+      exit 70
+    fi
+    sleep 0.1
+  done
+}
+
+case "$action" in
+  stop)
+    stop_fixture
+    ;;
+  start-ready)
+    start_and_wait_healthy
+    ;;
+  recreate-core-slow)
+    verify_fixture
+    core_volume="hermes-fixture-core-state-$run_id"
+    fixture_network="hermes-fixture-network-$run_id"
+    docker rm -f "$instance_id" >/dev/null
+    docker create \
+      --name "$instance_id" \
+      --hostname "$instance_id" \
+      --label poc.managed=true \
+      --label "poc.test-run=$run_id" \
+      --label poc.fixture=true \
+      --network "$fixture_network" \
+      --publish 8000:8000 \
+      --volume "$core_volume:/runtime-state" \
+      --env FIXTURE_MODE=SLOW_START \
+      --env FIXTURE_START_DELAY_SECONDS=5 \
+      --env FIXTURE_INSTANCE_ID="$instance_id" \
+      --env FIXTURE_RUN_ID="$run_id" \
+      --env FIXTURE_MODEL_NAME=synthetic-fixture-model \
+      --env FIXTURE_CLASSIFICATION=SYNTHETIC_TEST_ONLY \
+      "$fixture_image" >/dev/null
+    start_and_wait_healthy
+    ;;
+  *)
+    echo "unknown fixture preparation action: $action" >&2
+    exit 70
+    ;;
+esac
+
+printf '{"run_id":"%s","action":"%s","instance_id":"%s","prepared":true}\n' \
+  "$run_id" "$action" "$instance_id"

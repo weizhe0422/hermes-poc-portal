@@ -1,0 +1,53 @@
+#!/bin/sh
+set -eu
+
+if [ "$#" -ne 0 ]; then
+  echo "usage: scripts/run-m0-m1-acceptance" >&2
+  exit 70
+fi
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(dirname "$script_dir")
+cd "$repo_root"
+
+master_run_id=${RUN_ID:-"$(date -u +%Y%m%dt%H%M%Sz)-$$"}
+case "$master_run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
+    echo "RUN_ID must be one lowercase Compose-safe segment" >&2; exit 70 ;;
+esac
+if [ "${#master_run_id}" -gt 54 ]; then
+  echo "RUN_ID must be at most 54 characters for the two child runs" >&2
+  exit 70
+fi
+
+results_root=${TEST_RESULTS_ROOT:-"$repo_root/test-results"}
+infra_run_id="${master_run_id}-infra"
+runtime_run_id="${master_run_id}-runtime"
+for candidate in "$master_run_id" "$infra_run_id" "$runtime_run_id"; do
+  if [ -e "$results_root/$candidate" ]; then
+    echo "refusing to reuse run directory: $results_root/$candidate" >&2
+    exit 70
+  fi
+done
+
+set +e
+RUN_ID="$infra_run_id" TEST_RESULTS_ROOT="$results_root" \
+  "$repo_root/scripts/run-portal-e2e"
+infra_status=$?
+
+RUN_ID="$runtime_run_id" TEST_RESULTS_ROOT="$results_root" \
+  "$repo_root/scripts/run-controller-e2e"
+runtime_status=$?
+
+python3 "$repo_root/scripts/collect-test-results" --master \
+  "$master_run_id" "$infra_run_id" "$runtime_run_id"
+master_status=$?
+set -e
+
+if [ "$master_status" -ne 0 ]; then
+  echo "M0/M1 acceptance did not pass; master artifacts: $results_root/$master_run_id" >&2
+  exit 80
+fi
+if [ "$infra_status" -ne 0 ]; then exit "$infra_status"; fi
+if [ "$runtime_status" -ne 0 ]; then exit "$runtime_status"; fi
+echo "M0/M1 acceptance passed; master artifacts: $results_root/$master_run_id"

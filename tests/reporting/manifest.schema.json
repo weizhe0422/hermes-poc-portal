@@ -8,6 +8,9 @@
     "run_id",
     "fixture_type",
     "spec_version",
+    "contract_tag",
+    "contract_commit",
+    "contract_version",
     "git_commit",
     "git_branch",
     "platform_commit",
@@ -24,10 +27,27 @@
     },
     "fixture_type": {"const": "SYNTHETIC"},
     "spec_version": {"const": "0.1.0"},
+    "contract_tag": {"const": "contract-m0-m1-v0.2.0"},
+    "contract_commit": {
+      "const": "0ec5667c86522ef0b96e783c9db5912af3413e93"
+    },
+    "contract_version": {"const": "0.2.0"},
     "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "git_branch": {"const": "test/t-m0-m1"},
     "platform_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "test_suite": {"type": "string", "enum": ["controller-e2e", "portal-e2e"]},
+    "test_suite": {
+      "type": "string",
+      "enum": ["controller-e2e", "portal-e2e", "m0-m1-acceptance"]
+    },
+    "child_runs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["infrastructure", "runtime"],
+      "properties": {
+        "infrastructure": {"type": "string", "minLength": 1},
+        "runtime": {"type": "string", "minLength": 1}
+      }
+    },
     "images": {
       "type": "object",
       "minProperties": 1,

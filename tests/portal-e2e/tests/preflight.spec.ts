@@ -3,125 +3,191 @@ import path from 'node:path';
 
 import { expect, test } from '@playwright/test';
 
+import { writeCaseObservation } from '../support/case-observation';
 import {
-  configuredPositiveInteger,
   configuredResultsDir,
-  configuredValue,
-  DEFAULT_NETWORK_PROBE_TIMEOUT_MS,
-  DEFAULT_PORTAL_READY_TIMEOUT_MS,
-  DEFAULT_TEST_TIMEOUT_MS,
-  ENVIRONMENT_VARIABLES,
-  requiredHttpUrl,
+  configuredSpecificationRoot,
+  requiredContractProvenance,
+  requiredRunId,
 } from '../support/environment';
-import { matrixPlaceholder } from '../support/matrix-placeholder';
+import { runFailureProbe } from '../support/execution-probe';
+import {
+  FrozenInfrastructureCaseCatalog,
+  frozenInfrastructureTest,
+} from '../support/infrastructure-cases';
+import {
+  inspectRunnerIsolation,
+  type RunnerIsolationObservation,
+} from '../support/runner-isolation';
 
-test.describe('T-M0 external-container preflight placeholders', () => {
+const catalog = FrozenInfrastructureCaseCatalog.loadSync(
+  configuredSpecificationRoot(),
+);
+const runnerSourceDirectory = path.resolve(__dirname, '..');
+let isolationObservation: Promise<RunnerIsolationObservation> | undefined;
+
+function validateFrozenRun(): { resultsDir: string; runId: string } {
+  requiredContractProvenance(catalog.contractVersion);
+  return { resultsDir: configuredResultsDir(), runId: requiredRunId() };
+}
+
+function runnerIsolation(): Promise<RunnerIsolationObservation> {
+  isolationObservation ??= inspectRunnerIsolation({
+    resultsDir: configuredResultsDir(),
+    sourceDir: runnerSourceDirectory,
+    specificationRoot: configuredSpecificationRoot(),
+  });
+  return isolationObservation;
+}
+
+test.describe('Frozen v0.2 external-container infrastructure acceptance', () => {
   test(
-    'EXECUTION-001 validates required external-runner configuration',
-    matrixPlaceholder({
-      caseId: 'EXECUTION-001',
-      evidenceKind: 'preflight',
-      requirementIds: ['E2E-05'],
-    }),
+    'SECURITY-003 observes Runner mount, socket, source, and Git isolation',
+    frozenInfrastructureTest(catalog, 'SECURITY-003'),
     async () => {
-      expect(
-        configuredValue(ENVIRONMENT_VARIABLES.resultsDir),
-        'RESULTS_DIR must be explicitly configured by the external runner',
-      ).toBeTruthy();
-      expect(() =>
-        requiredHttpUrl(ENVIRONMENT_VARIABLES.portalBaseUrl),
-      ).not.toThrow();
-      expect(() =>
-        configuredPositiveInteger(
-          ENVIRONMENT_VARIABLES.networkProbeTimeoutMs,
-          DEFAULT_NETWORK_PROBE_TIMEOUT_MS,
-        ),
-      ).not.toThrow();
-      expect(() =>
-        configuredPositiveInteger(
-          ENVIRONMENT_VARIABLES.portalReadyTimeoutMs,
-          DEFAULT_PORTAL_READY_TIMEOUT_MS,
-        ),
-      ).not.toThrow();
-      expect(() =>
-        configuredPositiveInteger(
-          ENVIRONMENT_VARIABLES.testTimeoutMs,
-          DEFAULT_TEST_TIMEOUT_MS,
-        ),
-      ).not.toThrow();
+      const { resultsDir, runId } = validateFrozenRun();
+      await writeCaseObservation({
+        catalog,
+        infrastructureCase: catalog.get('SECURITY-003'),
+        observed: (await runnerIsolation()).security,
+        resultsDir,
+        runId,
+      });
     },
   );
 
   test(
-    'ARTIFACT-001 verifies the isolated result directory is writable',
-    matrixPlaceholder({
-      caseId: 'ARTIFACT-001',
-      evidenceKind: 'artifact',
-      requirementIds: ['BLD-08'],
-    }),
+    'EXECUTION-001 preserves an injected failure as a nonzero exit',
+    frozenInfrastructureTest(catalog, 'EXECUTION-001'),
     async () => {
+      const { resultsDir, runId } = validateFrozenRun();
+      const result = await runFailureProbe({
+        caseId: 'EXECUTION-001',
+        mode: 'deterministic',
+        resultsDir,
+        runId,
+        sourceDirectory: runnerSourceDirectory,
+      });
+      expect(
+        result.failure_retained,
+        'the deterministic failure precondition must produce retained JUnit failure evidence',
+      ).toBe(true);
+      await writeCaseObservation({
+        catalog,
+        infrastructureCase: catalog.get('EXECUTION-001'),
+        observed: {
+          exit_code_is_zero: result.exit_code_is_zero,
+          failure_converted_to_success: result.failure_converted_to_success,
+        },
+        resultsDir,
+        runId,
+      });
+    },
+  );
+
+  test(
+    'EXECUTION-002 retains JUnit, trace, and log with Run and Case identity',
+    frozenInfrastructureTest(catalog, 'EXECUTION-002'),
+    async () => {
+      const { resultsDir, runId } = validateFrozenRun();
+      const infrastructureCase = catalog.get('EXECUTION-002');
+      const result = await runFailureProbe({
+        caseId: 'EXECUTION-002',
+        mode: 'deterministic',
+        requiredArtifacts:
+          infrastructureCase.expectedStringArray('artifacts_generated'),
+        resultsDir,
+        runId,
+        sourceDirectory: runnerSourceDirectory,
+      });
+      expect(
+        result.failure_retained,
+        'the deterministic failure precondition must remain a failure',
+      ).toBe(true);
+      await writeCaseObservation({
+        catalog,
+        infrastructureCase,
+        observed: {
+          artifacts_generated: result.artifacts_generated,
+          artifact_contains_run_id: result.artifact_contains_run_id,
+          artifact_contains_case_id: result.artifact_contains_case_id,
+        },
+        resultsDir,
+        runId,
+      });
+    },
+  );
+
+  test(
+    'EXECUTION-003 runs a flaky-critical probe exactly once without retry masking',
+    frozenInfrastructureTest(catalog, 'EXECUTION-003'),
+    async () => {
+      const { resultsDir, runId } = validateFrozenRun();
+      const result = await runFailureProbe({
+        caseId: 'EXECUTION-003',
+        mode: 'flaky-first-attempt',
+        resultsDir,
+        runId,
+        sourceDirectory: runnerSourceDirectory,
+      });
+      await writeCaseObservation({
+        catalog,
+        infrastructureCase: catalog.get('EXECUTION-003'),
+        observed: {
+          failure_retained: result.failure_retained,
+          auto_retried_to_pass: result.auto_retried_to_pass,
+          attempt_count: result.attempt_count,
+        },
+        resultsDir,
+        runId,
+      });
+    },
+  );
+
+  test(
+    'EXECUTION-004 observes the Runner-side Git and writable-source boundary',
+    frozenInfrastructureTest(catalog, 'EXECUTION-004'),
+    async () => {
+      const { resultsDir, runId } = validateFrozenRun();
+      await writeCaseObservation({
+        catalog,
+        infrastructureCase: catalog.get('EXECUTION-004'),
+        observed: (await runnerIsolation()).execution,
+        resultsDir,
+        runId,
+      });
+    },
+  );
+
+  test(
+    'ARTIFACT-001 proves the independent result volume is writable and readable in-run',
+    frozenInfrastructureTest(catalog, 'ARTIFACT-001'),
+    async () => {
+      const { resultsDir, runId } = validateFrozenRun();
       const evidenceFile = path.join(
-        configuredResultsDir(),
+        resultsDir,
         'preflight',
         'artifact-write-probe.json',
       );
       const evidence = {
-        artifact: 'portal-e2e-write-probe',
-        status: 'writable',
+        artifact: 'portal-e2e-write-read-probe',
+        case_id: 'ARTIFACT-001',
+        run_id: runId,
+        status: 'writable-and-readable-in-run',
       };
-
       await mkdir(path.dirname(evidenceFile), { recursive: true });
       await writeFile(evidenceFile, `${JSON.stringify(evidence)}\n`, 'utf8');
-
-      const writtenEvidence = await readFile(evidenceFile, 'utf8');
-      expect(writtenEvidence).toBe(`${JSON.stringify(evidence)}\n`);
-    },
-  );
-
-  test(
-    'EXECUTION-002 keeps per-test output inside the configured result directory',
-    matrixPlaceholder({
-      caseId: 'EXECUTION-002',
-      evidenceKind: 'artifact',
-      requirementIds: ['E2E-06'],
-    }),
-    async ({}, testInfo) => {
-      const relativeOutputDir = path.relative(
-        configuredResultsDir(),
-        testInfo.outputDir,
+      expect(await readFile(evidenceFile, 'utf8')).toBe(
+        `${JSON.stringify(evidence)}\n`,
       );
 
-      expect(relativeOutputDir).not.toBe('');
-      expect(relativeOutputDir).not.toBe('..');
-      expect(relativeOutputDir.startsWith(`..${path.sep}`)).toBe(false);
-      expect(path.isAbsolute(relativeOutputDir)).toBe(false);
-    },
-  );
-
-  test(
-    'EXECUTION-003 keeps automatic retries disabled',
-    matrixPlaceholder({
-      caseId: 'EXECUTION-003',
-      evidenceKind: 'preflight',
-      requirementIds: ['E2E-07'],
-    }),
-    async ({}, testInfo) => {
-      expect(testInfo.project.retries).toBe(0);
-    },
-  );
-
-  test(
-    'EXECUTION-004 reserves source-tree immutability evidence for orchestration',
-    matrixPlaceholder({
-      caseId: 'EXECUTION-004',
-      evidenceKind: 'preflight',
-      requirementIds: ['E2E-08'],
-    }),
-    async () => {
-      test.fixme(
-        true,
-        'The external runner must compare the Git tree before and after execution; this container must not receive Git or a writable source mount.',
-      );
+      await writeCaseObservation({
+        catalog,
+        infrastructureCase: catalog.get('ARTIFACT-001'),
+        observed: (await runnerIsolation()).artifact,
+        resultsDir,
+        runId,
+      });
     },
   );
 });

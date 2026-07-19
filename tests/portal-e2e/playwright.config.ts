@@ -47,6 +47,7 @@ export default defineConfig({
       {
         outputFile: path.join(resultsDir, 'metadata.json'),
         resultsDir,
+        summaryFile: path.join(resultsDir, 'summary.json'),
       },
     ],
   ],

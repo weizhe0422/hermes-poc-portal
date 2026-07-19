@@ -1,163 +1,184 @@
-# Hermes PoC Portal 獨立黑箱測試 — T-M0 / T-M1
+# Hermes PoC Portal 獨立黑箱測試 — Frozen T-M0 / T-M1
 
-本目錄是 `test/t-m0-m1` branch 上的獨立測試交付。測試只讀取
-`hermes-poc-specification-v0.1/` 的 Contract、Test Case 與 Fixture；不匯入或修改
-Portal、Controller、Hermes 平台程式，也不依平台現況改寫 Expected Result。
+本 repository 的驗收基準是 `contract-m0-m1-v0.2.0`（Contract v0.2.0，
+commit `0ec5667c86522ef0b96e783c9db5912af3413e93`）。Runner 會在正式執行前
+確認 tag 可解析，並拒絕 Contract、Infrastructure/Runtime Case 或 Expected Result
+相對於該 tag 有差異的工作樹。
 
-## 範圍與判定來源
+測試只從 `hermes-poc-specification-v0.1/` 讀取 Contract、Test Case 與合成
+Fixture；不匯入、不修改、也不依候選平台行為重寫 Portal、Controller、Contract、
+Test Case 或 Expected Result。
 
-| Milestone | 已實作內容 | 判定來源 |
-|---|---|---|
-| T-M0 | Portal/Controller Runner image、合成 Hermes Fixture、Compose 隔離、JUnit/JSON/Markdown 彙整、Secret scan | Build/Test Guide、Environment Contract、Traceability Matrix |
-| T-M1 | `RUNTIME-001`、`RUNTIME-003`、`RUNTIME-006`、條件式 `RUNTIME-014` | Runtime YAML cases、Controller OpenAPI、AgentInstance schema、Runtime state machine |
+## 驗收 Inventory
 
-`SECURITY-001..003`、`EXECUTION-001..004` 與 `ARTIFACT-001` 目前是
-Traceability Matrix placeholder 的 Runner 自我檢查。它們在 JUnit/metadata 中明確標為
-`coverage_claim: none` 與 `acceptance_status: not-evaluated`；通過不代表平台驗收通過。
+Master Acceptance 固定輸出 31 個 Case：
 
-完整 Requirement/Test Case 對照位於
-`tests/traceability/t-m0-t-m1.yaml`。Fixture 對照位於
-`tests/fixture-manifest.yaml`。
+| 分類 | 數量 | Case ID |
+|---|---:|---|
+| Portal Infrastructure（執行） | 8 | `SECURITY-001..003`、`EXECUTION-001..004`、`ARTIFACT-001` |
+| Controller Environment（執行） | 1 | `CONTROLLER-ENV-001` |
+| Runtime（執行） | 12 | `RUNTIME-001/003/004/005/006/007/008/009/012/013/014/017` |
+| T-M4（不執行） | 10 | `CW-001..005`、`DEPLOY-001..005` |
 
-## Container 架構
+前 21 個 Case 是 `contracts/versions.yaml` 的 Frozen M0/M1 scope，逐案執行並
+產生 JUnit。後 10 個 Case 僅為 31-case master inventory 的里程碑邊界，固定分類為
+`DEFERRED_BY_MILESTONE`；它們不會被執行，也不視為 PASS、FAIL 或
+`NOT_EVALUATED`。完整 Requirement/Test Case 對照見
+`tests/traceability/t-m0-t-m1.yaml`。
 
-Portal E2E Runner 只加入 internal `e2e-network`，可見 Portal public boundary，但不能
-直接解析或連線 Controller/Hermes。Spec 以唯讀 bind mount 提供；結果目錄是唯一可寫
-mount。
+每個已執行 JUnit row 都包含 `test_case_id`、`requirement_ids`、`critical`、
+Frozen Contract provenance、case-level coverage 與 evidence kind。這是 Case-level
+驗收證據，不代表相關 Requirement 的其他 Portal、Golden Case 或後續里程碑切面也已完成。
 
-Controller E2E 使用兩層隔離：外層 Compose 啟動 rootless Docker-in-Docker；
-Controller-under-test 只透過 internal TCP network 控制該 Engine。Runner 只加入
-`controller-e2e-network`，不連 Docker Engine、不掛 Host Docker socket。Fixture image
-先由外層匯入隔離 Engine，再建立帶 `poc.test-run=<run-id>` label 的固定容器、network
-與 volume。Cleanup 只刪除相同 run label 的資源。
+## 外部 Container 與隔離架構
 
-Controller Runner 對每個 HTTP response 執行 OpenAPI 3.1 / JSON Schema 2020-12 驗證，
-再比對 YAML Expected Result。`RUNTIME-003` 另驗隔離 Engine 中目標容器確實 Running
-且出現 start event；`RUNTIME-006` 使用獨立事件視窗確認沒有 create/start/stop/restart
-event，且容器集合與測試 labels 完全不變。`RUNTIME-014` 使用 health 由 volume
-marker gate 的 `PERSISTENT` Fixture；Restart 後只有 marker 保留才可能回到 `HEALTHY`。
+Portal Infrastructure Runner 是外部 Playwright container，只加入 internal
+`e2e-network`。它可存取 Portal public boundary，不能解析或連線 Controller/Hermes；
+沒有 Docker socket、Git metadata、Knowledge/Skill/Formal volume 或可寫 source mount。
+Portal 是唯一對 Host 發布的服務，Host port 固定為 `8080`（預設綁定
+`127.0.0.1`）。Runner 內觀察與外部
+orchestrator 的 Host/container inspection 會合併後再判定 8 個 Infrastructure Case。
+
+Controller Runtime 使用專用 rootless Docker-in-Docker Engine。Controller-under-test
+只透過 internal TCP network 控制該 Engine；Runtime Runner 只透過 Controller OpenAPI
+操作，不掛 Host Docker socket，也不能直接控制隔離 Engine。外部 orchestrator 為每個
+Case 建立 event window、收集 container/volume/cleanup 證據，資源以
+`poc.test-run=<run-id>` 限定，結束時只清除此 run 的資源。
+
+兩個 Runner 均把 Frozen spec 唯讀掛到 `/spec`，並把結果寫到獨立 named volume；
+外部 orchestrator 在 Runner 退出後複製到指定的 artifact root。Controller HTTP response
+先依 Controller OpenAPI / referenced schema 驗證，再依 Runtime YAML Expected 與 State
+Machine 判定；Engine-only Expected 由隔離 Engine 證據 gate，不能由 API 推測。
 
 ## 建置與執行
 
-所有正式 E2E 入口要求：目前 branch 必須是 `test/t-m0-m1`、Git tree 必須 clean、
-Docker daemon 可用。Test image 可先單獨建置：
+正式入口要求目前 branch 為 `test/t-m0-m1`、Git tree clean、Docker daemon 可用，且
+production image 的 `org.opencontainers.image.revision` 必須等於完整 40 字元
+`PLATFORM_COMMIT`。
+
+只建置 Runner/Fixture images：
 
 ```sh
-scripts/run-controller-e2e --build-only
 scripts/run-portal-e2e --build-only
+scripts/run-controller-e2e --build-only
 ```
 
-Controller T-M1（需要外部提供 Controller production image）：
+執行完整 31-case master acceptance：
 
 ```sh
-CONTROLLER_IMAGE=hermes-poc-controller:0.1.0 \
+RUN_ID=m0m1-v020-001 \
+TEST_RESULTS_ROOT=/absolute/path/to/test-results \
 PLATFORM_COMMIT=<40-character-platform-commit> \
-RUN_ID=t-m1-controller-001 \
-scripts/run-controller-e2e
+PORTAL_IMAGE=<portal-candidate-image> \
+CONTROLLER_IMAGE=<controller-candidate-image> \
+scripts/run-m0-m1-acceptance
 ```
 
-Portal T-M0 Runner/network preflight（需要外部提供 Portal production image）：
+入口依序建立 `<RUN_ID>-infra` 與 `<RUN_ID>-runtime` child run，即使 child nonzero
+也會產生 `<RUN_ID>` master JUnit/summary。只有 21 個 Frozen Case 全部 PASS 且 artifact
+驗證通過時 master exit 0；只有明確 Contract ambiguity 阻擋時 master status 為
+`CONTRACT_BLOCKED`，否則為 `FAIL`，兩者 exit 80。
+
+也可單獨執行 child suite：
 
 ```sh
-PORTAL_IMAGE=hermes-poc-portal:0.1.0 \
-PLATFORM_COMMIT=<40-character-platform-commit> \
-RUN_ID=t-m0-portal-001 \
-scripts/run-portal-e2e
+RUN_ID=m0m1-infra-001 PLATFORM_COMMIT=<commit> \
+PORTAL_IMAGE=<image> CONTROLLER_IMAGE=<image> scripts/run-portal-e2e
+
+RUN_ID=m0m1-runtime-001 PLATFORM_COMMIT=<commit> \
+CONTROLLER_IMAGE=<image> scripts/run-controller-e2e
 ```
 
-可用 `TEST_RESULTS_ROOT=/approved/path` 改寫 artifact root。內部 Registry 可透過
-`CONTROLLER_E2E_IMAGE`、`HERMES_FIXTURE_IMAGE`、`PORTAL_E2E_IMAGE`、
-`DOCKER_ENGINE_TEST_IMAGE` 與 Docker build argument `PLAYWRIGHT_IMAGE` 指向核准 mirror；
-版本仍須維持 lock 與 image/package patch 一致。
-
-開發期的 test-owned unit checks：
+Test-owned unit/static checks：
 
 ```sh
-PYTHONPATH=tests/controller-e2e SPEC_ROOT=hermes-poc-specification-v0.1 \
-  python3 -m pytest tests/controller-e2e/tests/unit
-python3 -m pytest tests/hermes-fixture/tests tests/reporting
+PYTHONDONTWRITEBYTECODE=1 \
+PYTHONPATH=tests/controller-e2e:tests/hermes-fixture/src \
+SPEC_ROOT=hermes-poc-specification-v0.1 \
+python3 -m pytest tests/controller-e2e/tests/unit tests/hermes-fixture/tests tests/reporting
+
+cd tests/portal-e2e
+npm run test:unit
+npm run typecheck
 ```
 
-## Artifact
+可用 `CONTROLLER_E2E_IMAGE`、`PORTAL_E2E_IMAGE`、`HERMES_FIXTURE_IMAGE`、
+`DOCKER_ENGINE_TEST_IMAGE` 與 build arguments `TEST_PYTHON_IMAGE`、
+`PIP_INDEX_URL`、`PLAYWRIGHT_IMAGE`、`NPM_REGISTRY` 指向核准 registry/mirror。
 
-每次正式執行寫入 `test-results/<run-id>/`（或指定的 `TEST_RESULTS_ROOT`）：
+## JUnit 與 Artifact
+
+假設 `TEST_RESULTS_ROOT=/results`、`RUN_ID=m0m1-v020-001`：
 
 ```text
-manifest.yaml
-summary.json
-summary.md
-junit/*.xml
-controller-e2e/
-  core-start/{junit.xml,http-trace.jsonl,summary.json,summary.md}
-  core-idempotency/{junit.xml,http-trace.jsonl,summary.json,summary.md}
-  persistence/{junit.xml,http-trace.jsonl,summary.json,summary.md}
-  docker-snapshots/{containers.jsonl,persistence.json,invariants-*.json,events-*.jsonl,cleanup.json,outer-cleanup.json}
-  logs/*.log
-  runner-status.json
-portal-e2e/
-  junit/portal-e2e.xml
-  metadata.json
-  playwright-report/
-  compose.log
-  cleanup.json
-  runner-status.json
-  preflight/artifact-write-probe.json
-  screenshots/  # failure 時選擇性產生
-  traces/       # failure 時選擇性產生
-  videos/       # failure 時選擇性產生
+/results/m0m1-v020-001/
+├── manifest.yaml
+├── summary.json
+├── summary.md
+└── junit/m0-m1-acceptance.xml       # 31 rows
+
+/results/m0m1-v020-001-infra/
+├── manifest.yaml
+├── summary.{json,md}
+├── junit/*.xml                       # canonical 8 rows
+└── portal-e2e/
+    ├── junit/portal-e2e.xml
+    ├── metadata.json
+    ├── runner-observations.json
+    ├── infrastructure-evidence.json
+    ├── evidence/*.json
+    ├── execution-probe/**            # injected-failure JUnit/trace/log/attempt
+    ├── playwright-report/index.html
+    ├── preflight/artifact-write-probe.json
+    ├── compose.log
+    ├── cleanup.json
+    └── runner-status.json
+
+/results/m0m1-v020-001-runtime/
+├── manifest.yaml
+├── summary.{json,md}
+├── junit/*.xml                       # canonical 13 rows
+└── controller-e2e/
+    ├── infrastructure/junit.xml      # CONTROLLER-ENV-001
+    ├── runtime-*/{junit.xml,http-trace.jsonl,summary.json,summary.md}
+    ├── docker-snapshots/{controller-environment.json,containers.jsonl,
+    │   persistence.json,evidence-RUNTIME-*.json,events-RUNTIME-*.jsonl,
+    │   cleanup.json,outer-cleanup.json}
+    ├── logs/*.log
+    ├── phase-status.jsonl
+    └── runner-status.json
 ```
 
-`manifest.yaml` 同時記錄測試 Commit、40 字元 Platform candidate Commit、所有
-image tag 與執行當下不可變的 `sha256` image ID；正式 product run 缺少
-`PLATFORM_COMMIT`，或 production image 的 `org.opencontainers.image.revision`
-label 與該 Commit 不相等時，會在建立 acceptance artifact 前 fail closed。Controller
-manifest 也記錄隔離 Docker Engine image。
+Manifest 記錄 Test/Platform/Contract commit、image tag 與執行時 immutable image ID。
+Collector fail-closed 檢查 inventory、metadata、必要 artifact、cleanup、source-tree
+cleanliness、Critical verdict，並掃描文字、binary byte 與 ZIP member 中的合成 Secret。
+Screenshot/video 未做 OCR，仍是明確的 Coverage Gap。
 
-`scripts/collect-test-results <run-id>` 將各 Runner 的 JUnit 複製至 canonical
-`junit/`、產生機器可讀 `summary.json` 與人工摘要 `summary.md`，並在以下任一情況以
-exit 80 fail-closed：JUnit 缺失/損毀或沒有 testcase、case/requirement/Engine metadata
-缺失、suite case inventory 不完整或重複、必要 artifact/cleanup 缺失、Critical case 未通過、
-測試失敗或 artifact 出現合成
-Secret 的原始 byte（含 ZIP member）。Screenshot/video 內容未做 OCR，保留為 Coverage Gap。
-Matrix placeholder 即使 Runner check 成功也標為 `INFRA_PASS` / `NOT_EVALUATED`，
-不計入 acceptance passed 數量。
+## Synthetic Fixture
 
-## Fixture 清單
+`tests/fixture-manifest.yaml` 是 test-owned inventory；Runtime image
+`hermes-poc-hermes-fixture:0.1.0` 提供固定 mode。正式 Runtime 使用：
 
-合成 Runtime image `hermes-poc-hermes-fixture:0.1.0` 支援 `HEALTHY`、
-`SLOW_START`、`UNHEALTHY`、`CRASH`、`SECRET_LOG`、`PERSISTENT` 六種固定 mode。
-T-M1 使用：
+- `hermes-fixture-001`：一般 lifecycle；`RUNTIME-017` 前重建為 `SLOW_START`。
+- `hermes-fixture-slow`：`RUNTIME-008/009` 的併發與 timeout。
+- `unmanaged-fixture-001`：故意無 managed label，供 `RUNTIME-012`。
+- `hermes-fixture-secret`：只輸出合成值 `TEST_SECRET_123456`，供 `RUNTIME-013`。
+- `hermes-fixture-persistent`：run-scoped volume marker，供 `RUNTIME-014`。
 
-- `hermes-fixture-001`：初始為 stopped；供 `RUNTIME-001/003/006`。
-- `hermes-fixture-persistent`：掛 run-scoped volume 並預置固定 marker；供
-  `RUNTIME-014`。
+Control Wafer、Deployment knowledge、SVG 與 skill Fixture 保持唯讀，僅供 T-M4，
+本階段不載入。
 
-Bundle 內 Control Wafer、Deployment knowledge、SVG 與 verified skill Fixture 保持唯讀，
-屬 T-M4，本階段不載入。
+## Contract Question 與 Known Flakiness
 
-## Coverage Gap 與 Contract Ambiguity
+- `RUNTIME-009` Frozen Expected 使用 `error_code`，AgentInstance schema 只發布
+  `last_error_code`，但 Frozen Contract 沒有兩者的 mapping。Runner 不猜測欄位；該 Case
+  在其他觀察可完成時仍明確分類 `BLOCKED_BY_CONTRACT`，master 為
+  `CONTRACT_BLOCKED`，直到 Contract 發布 mapping。
+- `RUNTIME-008` 要求平行 Start/Stop 一次 accepted、一次
+  `OPERATION_CONFLICT`，但未凍結哪個 request 必須勝出。Runner 使用同步 barrier 且
+  `NO_RETRY`；scheduler 若先送出 Stop，會照實回報，不以 retry 掩蓋，因此是已知競態風險。
+- Frozen `versions.yaml` 把 `RUNTIME-008/009/012/013` 納入 M0/M1；它優先於仍把
+  這些 Case 標為 T-M2 的 legacy work packet。
 
-- `RUNTIME-002/004/005/007/010/011/015/016` 只在 Traceability Matrix 出現，沒有
-  YAML Expected Result；不自行生成 assertion。
-- `RUNTIME-014` 已存在 Bundle Draft Runtime Case，但需 Controller registry 能以
-  `DEFAULT_INSTANCE_ID` 指向 persistent Fixture；Harness 以獨立 phase/recreated
-  Controller 滿足此前置條件。
-- RT-06 提到 Restart idempotency，但 Runtime state machine 沒有 Restart idempotent
-  response；列為 `CONTRACT_AMBIGUITY`，不以 Start 案例代替。
-- RUNTIME-003 YAML 凍結 accepted HTTP status；RUNTIME-014 的 202 來自 OpenAPI；
-  兩者都沒有規定 202 AgentInstance snapshot 必須仍為 `STARTING`/`STOPPING`。
-  Runner 仍驗 schema、action-specific 有序可達路徑、最終狀態及 Engine events，
-  不自行增加 accepted-body Expected。
-- Instance Registry 的資料格式/載入 Contract 未凍結；Harness 只使用目前已定義的
-  `DEFAULT_INSTANCE_ID` 單一 Instance 介面，不假設未發布的 registry schema。
-- OD-03 尚未選定核准 LLM probe protocol；`RUNTIME-003` 會驗證 Contract schema 與
-  `llm_status: AVAILABLE`，但不宣告已獨立證明 Controller 呼叫了特定 LLM endpoint。
-- Docker/Playwright/Python base image 的內部 Registry digest 尚未由 Bundle 凍結；目前
-  固定 patch tag，整合環境應提供核准 mirror/digest。
-- Artifact Secret scan 會掃描文字、原始二進位 byte 與 ZIP member；不會對 screenshot/
-  video 做 OCR，因此不宣告完整媒體內容 Secret acceptance。
-- Test Dockerfile 可用 `TEST_PYTHON_IMAGE`、`PIP_INDEX_URL`、`PLAYWRIGHT_IMAGE`、
-  `NPM_REGISTRY` 指向內部 mirror，但本次未在完全封閉網路執行 Build acceptance。
-
-T-M2 的 `RUNTIME-008/009/012/013`，以及 T-M3 Portal product E2E、T-M4
-Control Wafer/Deployment Golden Cases，均明確不在本次交付範圍。
+不在 Frozen 21-case scope 的 Matrix-only Runtime ID、Portal product flow、Control
+Wafer/Deployment Golden Case，不會由本測試自行補 Expected 或宣告驗收。

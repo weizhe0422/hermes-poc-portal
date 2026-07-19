@@ -43,6 +43,13 @@ class RuntimeCaseCatalog:
 
         if not isinstance(document, dict) or not isinstance(document.get("cases"), list):
             raise ContractViolation(f"{case_path} must contain a cases array")
+        if not isinstance(document.get("suite_id"), str):
+            raise ContractViolation(f"{case_path} must declare suite_id")
+        if not isinstance(document.get("fixture_type"), str):
+            raise ContractViolation(f"{case_path} must declare fixture_type")
+
+        self.suite_id = document["suite_id"]
+        self.fixture_type = document["fixture_type"]
 
         validator = Draft202012Validator(schema)
         cases: dict[str, RuntimeCase] = {}

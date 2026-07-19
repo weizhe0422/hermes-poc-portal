@@ -14,7 +14,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 from referencing import Registry, Resource
 import yaml
 
-from .errors import ContractViolation, EnvironmentBlocker
+from .errors import ContractAmbiguity, ContractViolation, EnvironmentBlocker
 
 
 _RFC3339 = re.compile(
@@ -339,4 +339,77 @@ class ContractBundle:
             transition["from"]
             for transition in self.state_machine.get("transitions", [])
             if transition.get("event") == event
+        )
+
+    def lifecycle_request_outcome(
+        self, current_state: str, requested_action: str
+    ) -> dict[str, Any]:
+        """Resolve one request outcome directly from the Frozen state machine."""
+
+        transitions = [
+            transition
+            for transition in self.state_machine.get("transitions", [])
+            if transition.get("from") == current_state
+            and transition.get("action") == requested_action
+            and isinstance(transition.get("http_status"), int)
+        ]
+        idempotency = [
+            rule
+            for rule in self.state_machine.get("idempotency_rules", [])
+            if rule.get("current_state") == current_state
+            and rule.get("requested_action") == requested_action
+            and isinstance(rule.get("http_status"), int)
+        ]
+        if len(transitions) + len(idempotency) != 1:
+            raise ContractViolation(
+                "Frozen state machine does not publish one unique outcome for "
+                f"state={current_state!r}, action={requested_action!r}"
+            )
+        if transitions:
+            transition = transitions[0]
+            return {
+                "http_status": transition["http_status"],
+                "state": transition["to"],
+                "operation_action": transition["action"],
+            }
+        rule = idempotency[0]
+        return {
+            "http_status": rule["http_status"],
+            "state": current_state,
+            "operation_action": None,
+        }
+
+    def resource_state_error_field(
+        self,
+        expected_key: str,
+        error_code: str,
+    ) -> str:
+        definition = self.error_catalog.get("errors", {}).get(error_code)
+        if not isinstance(definition, dict):
+            raise ContractViolation(
+                f"Runtime Expected references unknown error code {error_code!r}"
+            )
+        if definition.get("delivery") not in {"RESOURCE_STATE", "BOTH"}:
+            raise ContractViolation(
+                f"Runtime Expected error code {error_code} is not deliverable "
+                "through resource state"
+            )
+
+        schema_path = (
+            self.spec_root / "contracts" / "schemas" / "agent-instance.schema.json"
+        )
+        schema = self._load_cached(schema_path)
+        properties = schema.get("properties", {})
+        if expected_key in properties:
+            return expected_key
+
+        candidates = sorted(
+            str(field)
+            for field in properties
+            if str(field).endswith("error_code")
+        )
+        candidate_text = ", ".join(candidates) or "none"
+        raise ContractAmbiguity(
+            f"Frozen runtime expected.{expected_key} has AgentInstance candidate "
+            f"field(s) {candidate_text}, but no published mapping connects them"
         )

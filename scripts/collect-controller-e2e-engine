@@ -24,4 +24,4 @@ if docker inspect "$persistent_instance_id" >/dev/null 2>&1; then
   fi
 fi
 
-printf '{"test_case_id":"RUNTIME-014","requirement_ids":["RT-05","NF-05"],"persistent_marker_present":%s}\n' "$marker_present" >&2
+printf '{"test_case_id":"RUNTIME-014","requirement_ids":["RT-05"],"persistent_marker_present":%s}\n' "$marker_present" >&2

@@ -1,100 +1,114 @@
-# Hermes PoC Portal E2E — T-M0 Runner Skeleton
+# Hermes PoC Portal E2E — Frozen M0/M1 Infrastructure Runner
 
-This directory contains only the external-container runner foundation for T-M0.
-It does not implement T-M3 Portal Runtime, Knowledge, Deployment, History,
-Feedback, Artifact, Live Hermes, or Golden Case flows.
+This external Playwright container evaluates the eight Portal-runner cases in
+the Frozen M0/M1 Acceptance Contract v0.2.0. It does not implement the T-M3
+Portal Runtime, Knowledge, Deployment, History, Feedback, Live Hermes, or
+Golden Case flows.
 
-## Version and container boundary
+## Expected source and metadata
 
-- `@playwright/test` is pinned to `1.61.0`.
-- The Docker base is pinned to the matching
-  `mcr.microsoft.com/playwright:v1.61.0-noble` patch tag. A build argument may
-  point `PLAYWRIGHT_IMAGE` at the approved internal mirror, but the mirrored
-  image must contain the same Playwright patch release.
-- `npm ci` uses `package-lock.json`; browser downloads are disabled because the
-  browser binaries come from the matching image.
-- Tests run as the image's non-root `pwuser` account.
-- Runner source and dependencies remain root-owned image content; only the
-  artifact path is writable by `pwuser`.
-- The runner must join only `e2e-network`. It must not receive a Docker socket,
-  writable source mount, Controller network, or Agent network.
+The runner reads `/spec/test-cases/infrastructure/cases.yaml` at collection
+time and requires `suite_id: infrastructure-v0.2`. Requirement IDs,
+`critical`, and every asserted Expected field come from that file. The suite
+does not copy Expected values into test code or relax them to match a platform
+candidate.
 
-## Configuration
+Every JUnit row carries:
 
-| Variable | Required | Purpose |
-|---|---:|---|
-| `PORTAL_BASE_URL` | yes | Absolute HTTP(S) URL visible to the runner |
-| `RESULTS_DIR` | yes | Writable artifact-volume directory; the image defaults to `/test-results/portal-e2e` |
-| `CONTROLLER_BASE_URL` | for network checks | Contract-supplied internal Controller URL that must be unreachable |
-| `HERMES_BASE_URL` | for network checks | Contract-supplied internal Hermes URL that must be unreachable |
-| `NETWORK_PROBE_TIMEOUT_MS` | no | Positive integer; default `3000` |
-| `PORTAL_READY_TIMEOUT_MS` | no | Bounded public-boundary startup wait; default `60000` |
-| `PORTAL_E2E_TIMEOUT_MS` | no | Positive integer; default `75000` |
+- `critical=true`
+- `hermes.case_source=frozen-infrastructure-case`
+- `hermes.coverage_claim=case-level`
+- `hermes.acceptance_status=case-evaluated`
+- `hermes.golden_status=frozen-v0.2.0`
+- the exact Requirement IDs loaded from the Frozen YAML
 
-`PORTAL_BASE_URL` is intentionally not assigned a Dockerfile default. The
-orchestrator must select the Portal service through the external E2E network.
+The eight rows are `SECURITY-001..003`, `EXECUTION-001..004`, and
+`ARTIFACT-001`.
 
-Example image invocation after the orchestrator has created the network and
-artifact volume:
+## Split evidence boundary
+
+The Runner writes actual observations to
+`runner-observations.json`. Each case record has `observed_fields`,
+`unobserved_fields`, and `runner_subset_status`; an unobserved field is never
+defaulted to `true`.
+
+Runner-observable coverage:
+
+- `SECURITY-002`: Portal, Controller, and Hermes connectivity.
+- `SECURITY-003`: Docker endpoint/socket, Knowledge/Skill/formal mounts,
+  writable source, and Git metadata isolation.
+- `EXECUTION-001..003`: real isolated Playwright failure processes, nonzero
+  exit, JUnit, trace, log, Run ID, Case ID, one attempt, and no retry masking.
+- `EXECUTION-004`: no Runner Git metadata and no writable source.
+- `ARTIFACT-001`: independent result volume plus in-run write/read probe.
+
+The external orchestrator must merge Host/container inspection and post-exit
+evidence for `SECURITY-001`, `SECURITY-002`, `EXECUTION-004`, and
+`ARTIFACT-001` before issuing the final Acceptance verdict.
+
+## Container boundary
+
+- `@playwright/test` and the base image are pinned to `1.61.0`.
+- Tests run as the image's non-root `pwuser`.
+- Runner source and dependencies are root-owned image content.
+- The only writable mount is the independent `/test-results` volume.
+- `/spec` is read-only.
+- No Docker endpoint, Git metadata, production/formal volume, Controller
+  network, or Agent network is supplied.
+
+Required environment:
+
+| Variable | Purpose |
+|---|---|
+| `PORTAL_BASE_URL` | Portal public boundary visible on `e2e-network` |
+| `CONTROLLER_BASE_URL` | Controller target that must be unreachable |
+| `HERMES_BASE_URL` | Hermes target that must be unreachable |
+| `RESULTS_DIR` | Per-run directory below the independent result volume |
+| `RUN_ID` | Lowercase artifact-safe run identity |
+| `SPEC_ROOT` | Read-only specification root, normally `/spec` |
+| `CONTRACT_TAG` | Must identify `contract-m0-m1-v0.2.0` |
+| `CONTRACT_COMMIT` | Full lowercase commit injected by orchestration |
+| `CONTRACT_VERSION` | Must equal `0.2.0` |
+
+Optional bounded timeout variables remain `NETWORK_PROBE_TIMEOUT_MS`,
+`PORTAL_READY_TIMEOUT_MS`, and `PORTAL_E2E_TIMEOUT_MS`.
+
+## Verification
+
+From this directory:
 
 ```sh
-docker run --rm \
-  --network e2e-network \
-  -e PORTAL_BASE_URL=http://portal:8080 \
-  -e CONTROLLER_BASE_URL=http://controller:8090 \
-  -e HERMES_BASE_URL=http://hermes:8000 \
-  -e RESULTS_DIR=/test-results/portal-e2e \
-  -v test-results:/test-results \
-  hermes-poc-portal-e2e:0.1.0
+npm ci --ignore-scripts --no-audit --no-fund
+npm run test:unit
+npm run typecheck
 ```
 
-The network names and URLs above illustrate the frozen Environment Contract;
-the actual external compose runner owns their values.
+The supported end-to-end entry point remains:
 
-## Evidence
+```sh
+scripts/run-portal-e2e
+```
 
-Under `RESULTS_DIR`, the configuration emits:
+## Artifacts
+
+Under `RESULTS_DIR` the Runner emits:
 
 ```text
 junit/portal-e2e.xml
 metadata.json
+summary.json
+runner-observations.json
+evidence/<CASE-ID>.json
 playwright-report/
-test-output/                         # failure attachment 時產生
-screenshots/                         # failure attachment 時產生
-traces/                              # failure attachment 時產生
-videos/                              # failure attachment 時產生
 preflight/artifact-write-probe.json
-compose.log                           # orchestration 產生
-cleanup.json                          # orchestration 產生
-runner-status.json                    # orchestration 產生
+execution-probe/<run-id>/<case-id>/
+├── junit.xml
+├── playwright.log
+├── probe-result.json
+├── attempts/attempt-1.json
+└── test-output/**/trace.zip
 ```
 
-Trace, screenshot, and video capture is retained on failure. Playwright keeps
-the original attachment in `test-output/`; the custom reporter copies supported
-attachments into the stable evidence directories.
-
-## Placeholder metadata convention
-
-The Traceability Matrix says that `SECURITY-*`, `EXECUTION-*`, and
-`ARTIFACT-*` are planned Test IDs and must not be reported as approved tests
-merely because the YAML Golden Cases do not yet exist. Every test in this
-skeleton therefore carries these annotations:
-
-| Annotation | T-M0 value |
-|---|---|
-| `hermes.case_id` | Matrix placeholder such as `SECURITY-002` |
-| `hermes.requirement_id` | One entry per mapped Requirement ID |
-| `hermes.case_source` | `traceability-matrix-placeholder` |
-| `hermes.coverage_claim` | `none` |
-| `hermes.acceptance_status` | `not-evaluated` |
-| `hermes.golden_status` | `not-applicable` |
-| `hermes.evidence_kind` | `preflight`, `artifact`, or `network-isolation` |
-
-The JUnit reporter embeds the annotations as testcase properties. The custom
-reporter writes the same convention to `metadata.json`. A passing execution
-means only that the runner-level check passed in that environment; it does not
-claim Contract coverage, Golden Case acceptance, or PoC acceptance.
-
-`EXECUTION-004` is deliberately reported as `fixme` until the external
-orchestrator implements pre/post Git-tree evidence. The test container itself
-must not be given Git access merely to make that placeholder pass.
+The outer orchestrator owns `manifest.yaml`, Host/container inspection,
+post-exit readability, cleanup, source-tree cleanliness, final JUnit evidence
+merge, and repository-wide secret scan.

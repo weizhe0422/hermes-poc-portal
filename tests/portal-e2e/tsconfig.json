@@ -13,7 +13,9 @@
   "include": [
     "playwright.config.ts",
     "reporters/**/*.ts",
+    "probes/**/*.ts",
     "support/**/*.ts",
-    "tests/**/*.ts"
+    "tests/**/*.ts",
+    "unit/**/*.ts"
   ]
 }

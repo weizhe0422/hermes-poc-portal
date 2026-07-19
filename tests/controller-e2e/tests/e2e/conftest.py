@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+
 import pytest
 
 from controller_e2e.api import ControllerClient, ValidatedResponse
@@ -14,6 +16,16 @@ from controller_e2e.errors import (
     TransportFailure,
 )
 from controller_e2e.polling import BoundedPoller
+
+
+@pytest.fixture(autouse=True)
+def outer_phase_precondition() -> None:
+    """Classify an outer fixture-preparation failure without calling the SUT."""
+
+    if os.getenv("E2E_SETUP_BLOCKER", "").strip():
+        raise EnvironmentBlocker(
+            "outer isolated fixture preparation did not satisfy the case precondition"
+        )
 
 
 @pytest.fixture(scope="session")

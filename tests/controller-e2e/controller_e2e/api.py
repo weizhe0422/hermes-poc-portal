@@ -152,3 +152,7 @@ class ControllerClient:
         return self._exchange(
             "restartManagedInstance", self._instance_path(instance_id, "/restart")
         )
+
+    def get_instance_logs(self, instance_id: str, tail: int) -> ValidatedResponse:
+        path = self._instance_path(instance_id, "/logs")
+        return self._exchange("getManagedInstanceLogs", f"{path}?tail={tail}")

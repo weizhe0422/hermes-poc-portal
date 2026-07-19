@@ -16,8 +16,11 @@ RUN npm ci --ignore-scripts --no-audit --no-fund --registry "$NPM_REGISTRY" \
 
 COPY playwright.config.ts tsconfig.json ./
 COPY reporters ./reporters
+COPY probes ./probes
 COPY support ./support
 COPY tests ./tests
+
+RUN npm run typecheck
 
 RUN mkdir -p /test-results/portal-e2e \
     && chown -R pwuser:pwuser /test-results
