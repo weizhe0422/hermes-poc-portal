@@ -1,12 +1,12 @@
 # 文件目的：提供規格、Contract、測試、Knowledge、Skill與Image版本的單一Manifest範本；每次Build與測試均須複製並填入實際值。
 # 適用角色：所有角色。
-# 狀態：整體Spec仍為Draft v0.1.0，但M0/M1 Contract子集合已Frozen為v0.2.0。
+# 狀態：整體Spec仍為Draft v0.1.0，但M0/M1 Contract子集合已Frozen為v0.2.1。
 
 spec_version: 0.1.0
 spec_status: DRAFT
 
 m0_m1_acceptance_contract:
-  version: 0.2.0
+  version: 0.2.1
   status: FROZEN
   frozen_scope:
     files:
@@ -40,7 +40,7 @@ controller_api_version: 0.2.0
 ui_contract_version: 0.1.0
 runtime_state_machine_version: 0.2.0
 error_catalog_version: 0.1.0
-test_suite_version: 0.2.0
+test_suite_version: 0.2.1
 
 runtime_values_to_fill:
   git_commit: null
