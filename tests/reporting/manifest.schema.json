@@ -10,8 +10,10 @@
     "spec_version",
     "git_commit",
     "git_branch",
+    "platform_commit",
     "test_suite",
     "images",
+    "image_ids",
     "executed_at"
   ],
   "properties": {
@@ -24,11 +26,20 @@
     "spec_version": {"const": "0.1.0"},
     "git_commit": {"type": "string", "minLength": 7},
     "git_branch": {"type": "string", "minLength": 1},
+    "platform_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "test_suite": {"type": "string", "enum": ["controller-e2e", "portal-e2e"]},
     "images": {
       "type": "object",
       "minProperties": 1,
       "additionalProperties": {"type": "string", "minLength": 1}
+    },
+    "image_ids": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^sha256:[0-9a-f]{64}$"
+      }
     },
     "executed_at": {"type": "string", "format": "date-time"}
   }

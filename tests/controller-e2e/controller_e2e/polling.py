@@ -20,7 +20,7 @@ class PollResult(Generic[T]):
     elapsed_seconds: float
 
 
-class BoundedPoller:
+class BoundedPoller(Generic[T]):
     def __init__(
         self,
         initial_interval_seconds: float,

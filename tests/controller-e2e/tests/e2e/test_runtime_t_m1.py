@@ -135,11 +135,9 @@ def test_runtime_003_starts_stopped_instance_to_healthy(
         instance_id,
         "RUNTIME-003 accepted instance_id",
     )
-    require_equal(
-        accepted_instance.get("state"),
-        "STARTING",
-        "RUNTIME-003 START_REQUESTED transition",
-    )
+    # The Bundle freezes the 202 status and final HEALTHY state, but does not
+    # bind the AgentInstance snapshot in the accepted response to STARTING.
+    # OpenAPI schema validation above still rejects every non-contract state.
     final = _wait_for_state(
         controller_client,
         poller,
@@ -260,11 +258,9 @@ def test_runtime_014_restart_preserves_marker_gated_fixture(
         instance_id,
         "RUNTIME-014 accepted instance_id",
     )
-    require_equal(
-        accepted_instance.get("state"),
-        "STOPPING",
-        "RUNTIME-014 RESTART_REQUESTED transition",
-    )
+    # The 202 response body is schema-bound, while the Bundle freezes only the
+    # final HEALTHY state. The bounded observations and Engine events below
+    # prove the Restart transition without inventing an accepted-body state.
     final = _wait_for_state(
         controller_client,
         poller,

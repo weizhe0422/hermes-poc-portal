@@ -30,8 +30,10 @@ def _write_junit(
         "spec_version": "0.1.0",
         "git_commit": "0123456789abcdef",
         "git_branch": "test/t-m0-m1",
+        "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
         "test_suite": "controller-e2e",
         "images": {"controller_e2e": "example.invalid/controller-e2e:0.1.0"},
+        "image_ids": {"controller_e2e": f"sha256:{'a' * 64}"},
         "executed_at": "2026-07-18T00:00:00Z",
     }
     (run_root / "manifest.yaml").write_text(
@@ -142,8 +144,10 @@ def _write_portal_junit(run_root: Path) -> None:
         "spec_version": "0.1.0",
         "git_commit": "0123456789abcdef",
         "git_branch": "test/t-m0-m1",
+        "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
         "test_suite": "portal-e2e",
         "images": {"portal_e2e": "example.invalid/portal-e2e:0.1.0"},
+        "image_ids": {"portal_e2e": f"sha256:{'b' * 64}"},
         "executed_at": "2026-07-18T00:00:00Z",
     }
     (run_root / "manifest.yaml").write_text(json.dumps(manifest), encoding="utf-8")
@@ -325,6 +329,40 @@ def test_collector_fails_when_manifest_is_missing(tmp_path: Path) -> None:
     assert completed.returncode == 80
     summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
     assert summary["manifest_errors"] == ["manifest.yaml is missing"]
+
+
+def test_collector_requires_platform_candidate_provenance(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-no-platform-provenance"
+    _write_junit(run_root)
+    manifest_path = run_root / "manifest.yaml"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("platform_commit")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["manifest_errors"] == [
+        "manifest.platform_commit must be a 40-character lowercase commit"
+    ]
+
+
+def test_collector_requires_image_ids_for_every_image(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-incomplete-image-ids"
+    _write_junit(run_root)
+    manifest_path = run_root / "manifest.yaml"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["images"]["controller"] = "example.invalid/controller:candidate"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["manifest_errors"] == [
+        "manifest.image_ids keys must match manifest.images keys"
+    ]
 
 
 def test_collector_rejects_a_path_traversal_run_id(tmp_path: Path) -> None:

@@ -51,6 +51,7 @@ Controller T-M1（需要外部提供 Controller production image）：
 
 ```sh
 CONTROLLER_IMAGE=hermes-poc-controller:0.1.0 \
+PLATFORM_COMMIT=<40-character-platform-commit> \
 RUN_ID=t-m1-controller-001 \
 scripts/run-controller-e2e
 ```
@@ -59,6 +60,7 @@ Portal T-M0 Runner/network preflight（需要外部提供 Portal production imag
 
 ```sh
 PORTAL_IMAGE=hermes-poc-portal:0.1.0 \
+PLATFORM_COMMIT=<40-character-platform-commit> \
 RUN_ID=t-m0-portal-001 \
 scripts/run-portal-e2e
 ```
@@ -105,6 +107,10 @@ portal-e2e/
   videos/       # failure 時選擇性產生
 ```
 
+`manifest.yaml` 同時記錄測試 Commit、40 字元 Platform candidate Commit、所有
+image tag 與執行當下不可變的 `sha256` image ID；正式 product run 缺少
+`PLATFORM_COMMIT` 時會在建立 acceptance artifact 前 fail closed。
+
 `scripts/collect-test-results <run-id>` 將各 Runner 的 JUnit 複製至 canonical
 `junit/`、產生機器可讀 `summary.json` 與人工摘要 `summary.md`，並在以下任一情況以
 exit 80 fail-closed：JUnit 缺失/損毀或沒有 testcase、case/requirement/Engine metadata
@@ -136,6 +142,9 @@ Bundle 內 Control Wafer、Deployment knowledge、SVG 與 verified skill Fixture
   Controller 滿足此前置條件。
 - RT-06 提到 Restart idempotency，但 Runtime state machine 沒有 Restart idempotent
   response；列為 `CONTRACT_AMBIGUITY`，不以 Start 案例代替。
+- Runtime YAML 只凍結 RUNTIME-003/RUNTIME-014 的 accepted HTTP status 與最終狀態，
+  沒有規定 202 AgentInstance snapshot 必須仍為 `STARTING`/`STOPPING`；Runner 驗
+  schema、合法觀察路徑、最終狀態及 Engine events，不自行增加 accepted-body Expected。
 - Instance Registry 的資料格式/載入 Contract 未凍結；Harness 只使用目前已定義的
   `DEFAULT_INSTANCE_ID` 單一 Instance 介面，不假設未發布的 registry schema。
 - OD-03 尚未選定核准 LLM probe protocol；`RUNTIME-003` 會驗證 Contract schema 與

@@ -81,3 +81,7 @@ def test_polling_rejects_a_success_observed_after_the_deadline():
             timeout_seconds=1.0,
             description="fixture health",
         )
+
+
+def test_bounded_poller_supports_runtime_type_parameters() -> None:
+    assert BoundedPoller[int] is not None

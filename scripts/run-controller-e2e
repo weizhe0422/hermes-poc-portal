@@ -162,10 +162,26 @@ if [ "$mode" = build ]; then
   exit 0
 fi
 
+platform_commit=${PLATFORM_COMMIT:-}
+case "$platform_commit" in
+  ''|*[!0-9a-f]*)
+    echo "PLATFORM_COMMIT must be the 40-character lowercase candidate commit" >&2
+    exit 70
+    ;;
+esac
+if [ "${#platform_commit}" -ne 40 ] \
+  || ! git cat-file -e "$platform_commit^{commit}" 2>/dev/null; then
+  echo "PLATFORM_COMMIT is not an available 40-character candidate commit" >&2
+  exit 70
+fi
+
 if ! docker image inspect "$CONTROLLER_IMAGE" >/dev/null 2>&1; then
   echo "Controller image is not available: $CONTROLLER_IMAGE" >&2
   exit 70
 fi
+controller_image_id=$(docker image inspect --format '{{.Id}}' "$CONTROLLER_IMAGE")
+controller_e2e_image_id=$(docker image inspect --format '{{.Id}}' "$CONTROLLER_E2E_IMAGE")
+fixture_image_id=$(docker image inspect --format '{{.Id}}' "$HERMES_FIXTURE_IMAGE")
 
 cat > "$run_results/manifest.yaml" <<EOF
 {
@@ -174,11 +190,17 @@ cat > "$run_results/manifest.yaml" <<EOF
   "spec_version": "0.1.0",
   "git_commit": "$(git rev-parse HEAD)",
   "git_branch": "$branch",
+  "platform_commit": "$platform_commit",
   "test_suite": "controller-e2e",
   "images": {
     "controller": "$CONTROLLER_IMAGE",
     "controller_e2e": "$CONTROLLER_E2E_IMAGE",
     "hermes_fixture": "$HERMES_FIXTURE_IMAGE"
+  },
+  "image_ids": {
+    "controller": "$controller_image_id",
+    "controller_e2e": "$controller_e2e_image_id",
+    "hermes_fixture": "$fixture_image_id"
   },
   "executed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 }

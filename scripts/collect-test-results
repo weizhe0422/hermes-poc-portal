@@ -272,11 +272,24 @@ def _manifest_errors(run_root: Path, run_id: str) -> list[str]:
         errors.append("manifest.git_commit is missing or too short")
     if not isinstance(manifest.get("git_branch"), str) or not manifest["git_branch"]:
         errors.append("manifest.git_branch is missing")
+    platform_commit = manifest.get("platform_commit")
+    if not isinstance(platform_commit, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", platform_commit
+    ):
+        errors.append("manifest.platform_commit must be a 40-character lowercase commit")
     images = manifest.get("images")
     if not isinstance(images, dict) or not images or not all(
         isinstance(value, str) and value for value in images.values()
     ):
         errors.append("manifest.images must contain non-empty image references")
+    image_ids = manifest.get("image_ids")
+    if not isinstance(image_ids, dict) or not image_ids or not all(
+        isinstance(value, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", value)
+        for value in image_ids.values()
+    ):
+        errors.append("manifest.image_ids must contain immutable sha256 image IDs")
+    elif isinstance(images, dict) and set(image_ids) != set(images):
+        errors.append("manifest.image_ids keys must match manifest.images keys")
     executed_at = manifest.get("executed_at")
     if not isinstance(executed_at, str) or not _RFC3339_UTC.fullmatch(executed_at):
         errors.append("manifest.executed_at must be a UTC RFC 3339 timestamp")
