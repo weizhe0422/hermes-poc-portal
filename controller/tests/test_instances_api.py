@@ -63,14 +63,15 @@ def test_list_instances_returns_registry_entries(runtime_app):
 
 
 def test_start_from_stopped_reaches_healthy(runtime_app):
-    # RUNTIME-003：Stopped → 202 → HEALTHY（Hermes 與 LLM Probe 皆 AVAILABLE）
+    # RUNTIME-003（v0.2）：202 必回 STARTING＋operation.action=START，最終 HEALTHY
     app = runtime_app()
     add_managed_fixture(app.adapter, status="created")
     response = app.client.post(f"/v1/instances/{INSTANCE}/start")
     assert response.status_code == 202
-    # Fake Adapter 讓操作可能在回應組裝前即完成，立即狀態容許 STARTING 或已達 HEALTHY；
-    # 「必為 STARTING」的確定性驗證見 test_locking（Probe 阻塞時）。
-    assert response.json()["state"] in ("STARTING", "HEALTHY")
+    accepted = response.json()
+    assert accepted["state"] == "STARTING"
+    assert accepted["operation"]["action"] == "START"
+    assert accepted["operation"]["operation_id"]
     body = wait_for_state(app, INSTANCE, "HEALTHY")
     assert body["hermes_status"] == "AVAILABLE"
     assert body["llm_status"] == "AVAILABLE"
@@ -113,11 +114,15 @@ def test_start_from_error_is_rejected_per_ca1(runtime_app):
 
 
 def test_stop_running_instance_reaches_stopped(runtime_app):
+    # RUNTIME-004（v0.2）：202 必回 STOPPING＋operation.action=STOP＋operation_id
     app = runtime_app()
     add_managed_fixture(app.adapter, status="running")
     response = app.client.post(f"/v1/instances/{INSTANCE}/stop")
     assert response.status_code == 202
-    assert response.json()["state"] in ("STOPPING", "STOPPED")
+    accepted = response.json()
+    assert accepted["state"] == "STOPPING"
+    assert accepted["operation"]["action"] == "STOP"
+    assert accepted["operation"]["operation_id"]
     wait_for_state(app, INSTANCE, "STOPPED")
     assert app.adapter.stop_calls == [f"cid-{INSTANCE}"]
     # RT-04：不刪除 Container
@@ -154,16 +159,46 @@ def test_restart_from_stopped_is_invalid(runtime_app):
 
 
 def test_restart_running_instance_cycles_to_healthy(runtime_app):
+    # RUNTIME-005（v0.2）：202 必回 STOPPING＋operation.action=RESTART＋operation_id；
     # RUNTIME-014 語意：Restart 保留 Container（Volume），Stop 後 Start 回 HEALTHY
     app = runtime_app()
     container = add_managed_fixture(app.adapter, status="running")
     response = app.client.post(f"/v1/instances/{INSTANCE}/restart")
     assert response.status_code == 202
-    assert response.json()["state"] in ("STOPPING", "STARTING", "HEALTHY")
+    accepted = response.json()
+    assert accepted["state"] == "STOPPING"
+    assert accepted["operation"]["action"] == "RESTART"
+    assert accepted["operation"]["operation_id"]
     wait_for_state(app, INSTANCE, "HEALTHY")
     assert app.adapter.stop_calls == [container.container_id]
     assert app.adapter.start_calls == [container.container_id]
     assert container.container_id in app.adapter.containers  # 未刪除
+
+
+def test_duplicate_restart_reuses_same_operation(runtime_app):
+    # RUNTIME-017（v0.2，critical）：Restart 仍執行中時重複 Restart →
+    # 202、state ∈ {STOPPING, STARTING}、operation.action=RESTART、同一 operation_id，
+    # 且不重複執行 Stop/Start（duplicate_restart_executed=false）。
+    app = runtime_app(hermes_start_timeout_seconds=5)
+    container = add_managed_fixture(app.adapter, status="running")
+    app.probes.hermes = "UNAVAILABLE"  # 讓 Restart 停留在 STARTING 階段
+
+    first = app.client.post(f"/v1/instances/{INSTANCE}/restart")
+    assert first.status_code == 202
+    first_operation_id = first.json()["operation"]["operation_id"]
+
+    duplicate = app.client.post(f"/v1/instances/{INSTANCE}/restart")
+    assert duplicate.status_code == 202
+    body = duplicate.json()
+    assert body["state"] in ("STOPPING", "STARTING")
+    assert body["operation"]["action"] == "RESTART"
+    assert body["operation"]["operation_id"] == first_operation_id  # same_operation_id
+
+    app.probes.hermes = "AVAILABLE"  # 放行健康條件，讓原 Restart 完成
+    wait_for_state(app, INSTANCE, "HEALTHY")
+    # duplicate_restart_executed=false：Stop/Start 各只執行一次
+    assert app.adapter.stop_calls == [container.container_id]
+    assert app.adapter.start_calls == [container.container_id]
 
 
 # ---- 白名單（RT-10、RT-11；RUNTIME-012） ----

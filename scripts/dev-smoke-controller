@@ -44,7 +44,7 @@ docker run -d --name "${CONTROLLER}" --network "${NET}" --label "${RUN_LABEL}" \
   -p 127.0.0.1:0:8090 \
   -e HERMES_BASE_URL=http://hermes:8000 \
   -e HERMES_HEALTH_PATH=/health \
-  -e HERMES_LLM_BASE_URL=http://hermes:8000/health \
+  -e HERMES_LLM_BASE_URL=http://hermes:8000/llm/health \
   -e HERMES_MODEL_NAME=smoke-model \
   -e KNOWLEDGE_VERSION=smoke-kw -e SKILL_VERSION=smoke-sk \
   -e HERMES_START_TIMEOUT_SECONDS=60 -e HERMES_STOP_TIMEOUT_SECONDS=15 \

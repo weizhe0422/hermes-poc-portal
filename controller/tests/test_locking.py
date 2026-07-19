@@ -50,3 +50,31 @@ def test_operation_object_matches_contract_shape(runtime_app):
     operation = body["operation"]
     assert set(operation) == {"operation_id", "action", "started_at"}
     assert operation["action"] == "START"
+
+
+def start_slow_restart(app):
+    """發起停留在 STARTING 階段的 RESTART（Stop 快速完成、Probe 不 Ready）。"""
+    add_managed_fixture(app.adapter, status="running")
+    app.probes.hermes = "UNAVAILABLE"
+    response = app.client.post(f"/v1/instances/{INSTANCE}/restart")
+    assert response.status_code == 202
+    return response.json()
+
+
+def test_start_conflicts_with_inflight_restart(runtime_app):
+    # v0.2 invalid_requests condition：requested(START) != current operation(RESTART) → 409
+    # （取代 v0.1 依狀態表 STARTING+START→202 的判定）
+    app = runtime_app(hermes_start_timeout_seconds=5)
+    start_slow_restart(app)
+    response = app.client.post(f"/v1/instances/{INSTANCE}/start")
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "OPERATION_CONFLICT"
+
+
+def test_stop_conflicts_with_inflight_restart(runtime_app):
+    # v0.2 invalid_requests condition：requested(STOP) != current operation(RESTART) → 409
+    app = runtime_app(hermes_start_timeout_seconds=5)
+    start_slow_restart(app)
+    response = app.client.post(f"/v1/instances/{INSTANCE}/stop")
+    assert response.status_code == 409
+    assert response.json()["error_code"] == "OPERATION_CONFLICT"

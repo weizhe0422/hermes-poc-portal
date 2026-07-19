@@ -21,7 +21,8 @@ from app.state.machine import (
     Decision,
     DecisionKind,
     RuntimeState,
-    decide,
+    decide_idle,
+    decide_in_flight,
     map_container_status,
     state_when_idle,
 )
@@ -76,14 +77,16 @@ class RuntimeService:
         # 白名單不通過即拒絕，之後不再接觸該 Container（RT-10；RUNTIME-012）。
         self._registry.require_managed(candidate.name, candidate.labels)
 
-        # 同步 critical section：決策與佔用操作間不得有 await（RT-07）。
-        decision, operation_started = self._decide_and_maybe_begin(instance_id, candidate, action)
+        # 同步 critical section：決策、佔用操作與 202 快照之間不得有 await（RT-07）。
+        # v0.2.0 要求 202 必回 STARTING/STOPPING＋operation 物件（controller-api 202 Schema），
+        # 因此 202 回應以「接受當下」的快照組裝，不重新 inspect（避免操作先完成的 race）。
+        decision, payload = self._decide_begin_and_snapshot(entry, candidate, action)
 
         if decision.kind == DecisionKind.REJECT:
             assert decision.error_code is not None
             raise ControllerError(decision.error_code)
 
-        if operation_started:
+        if decision.kind == DecisionKind.ACCEPT:
             runner = {
                 Action.START: self._run_start,
                 Action.STOP: self._run_stop,
@@ -95,34 +98,57 @@ class RuntimeService:
                 extra={"instance_id": instance_id, "action": action.value},
             )
 
-        refreshed = await asyncio.to_thread(self._adapter.inspect, candidate.container_id)
-        payload = await self._build_instance(entry, refreshed or candidate)
+        if payload is None:
+            # NOOP 200：回應反映當下實況（RUNTIME-006/007 的 final_state 驗證）。
+            refreshed = await asyncio.to_thread(self._adapter.inspect, candidate.container_id)
+            payload = await self._build_instance(entry, refreshed or candidate)
         return decision.http_status, payload
 
-    def _decide_and_maybe_begin(
-        self, instance_id: str, candidate: ContainerInfo, action: Action
-    ) -> tuple[Decision, bool]:
+    def _decide_begin_and_snapshot(
+        self, entry: RegistryEntry, candidate: ContainerInfo, action: Action
+    ) -> tuple[Decision, dict[str, object] | None]:
+        """同步：決策＋（ACCEPT 時）佔用操作＋（202 時）組裝快照回應。
+
+        - 操作進行中：contextual_idempotency_rules 以 action 比對——同型 202 沿用
+          operation_id（RUNTIME-017），不同型 409 OPERATION_CONFLICT（condition:
+          requested_action != current_operation_action）。
+        - 無操作：HEALTHY 與 UNHEALTHY 在決策表結果相同（CA-1 後），以 container
+          狀態＋黏性錯誤推導即可，不需在鎖內等待 Probe。
+        """
+        instance_id = entry.instance_id
         record = self._store.record(instance_id)
+
         if record.operation is not None:
-            # 操作進行中：狀態即操作階段（STARTING/STOPPING），依 contract 表回應。
-            decision = decide(record.operation.phase, action)
-            assert decision.kind != DecisionKind.ACCEPT
-            return decision, False
+            decision = decide_in_flight(record.operation.action, action)
+            if decision.kind == DecisionKind.EXISTING:
+                return decision, self._operation_snapshot(entry, candidate)
+            return decision, None
 
         container_status = map_container_status(candidate.status)
-        # 決策層面 HEALTHY 與 UNHEALTHY 的表列結果相同（CA-1 裁定後），
-        # 因此無操作時以 container 狀態＋黏性錯誤推導即可，不需在鎖內等待 Probe。
         idle_state = state_when_idle(
             container_status, "AVAILABLE", "AVAILABLE", record.last_error_code
         )
-        decision = decide(idle_state, action)
+        decision = decide_idle(idle_state, action)
         if decision.kind == DecisionKind.ACCEPT:
             initial_phase = (
                 RuntimeState.STARTING if action == Action.START else RuntimeState.STOPPING
             )
             self._store.try_begin(instance_id, action, initial_phase)
-            return decision, True
-        return decision, False
+            return decision, self._operation_snapshot(entry, candidate)
+        return decision, None
+
+    def _operation_snapshot(
+        self, entry: RegistryEntry, candidate: ContainerInfo
+    ) -> dict[str, object]:
+        """以進行中操作的階段組裝 202 回應（state=STARTING/STOPPING、operation 必填）。"""
+        record = self._store.record(entry.instance_id)
+        assert record.operation is not None
+        return self._instance_payload(
+            entry,
+            candidate,
+            record.operation.phase,
+            map_container_status(candidate.status),
+        )
 
     # ---- 非同步操作（RT-08 Timeout；逾時進 ERROR 並保存錯誤碼） ----
 
