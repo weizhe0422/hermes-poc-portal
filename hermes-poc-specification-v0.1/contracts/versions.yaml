@@ -1,14 +1,46 @@
 # 文件目的：提供規格、Contract、測試、Knowledge、Skill與Image版本的單一Manifest範本；每次Build與測試均須複製並填入實際值。
 # 適用角色：所有角色。
-# 狀態：Draft v0.1。
+# 狀態：整體Spec仍為Draft v0.1.0，但M0/M1 Contract子集合已Frozen為v0.2.0。
 
 spec_version: 0.1.0
+spec_status: DRAFT
+
+m0_m1_acceptance_contract:
+  version: 0.2.0
+  status: FROZEN
+  frozen_scope:
+    files:
+      - contracts/openapi/controller-api.yaml
+      - contracts/state-machines/hermes-runtime.yaml
+    case_ids:
+      - SECURITY-001
+      - SECURITY-002
+      - SECURITY-003
+      - EXECUTION-001
+      - EXECUTION-002
+      - EXECUTION-003
+      - EXECUTION-004
+      - ARTIFACT-001
+      - CONTROLLER-ENV-001
+      - RUNTIME-001
+      - RUNTIME-003
+      - RUNTIME-004
+      - RUNTIME-005
+      - RUNTIME-006
+      - RUNTIME-007
+      - RUNTIME-008
+      - RUNTIME-009
+      - RUNTIME-012
+      - RUNTIME-013
+      - RUNTIME-014
+      - RUNTIME-017
+
 portal_api_version: 0.1.0
-controller_api_version: 0.1.0
+controller_api_version: 0.2.0
 ui_contract_version: 0.1.0
-runtime_state_machine_version: 0.1.0
+runtime_state_machine_version: 0.2.0
 error_catalog_version: 0.1.0
-test_suite_version: 0.1.0
+test_suite_version: 0.2.0
 
 runtime_values_to_fill:
   git_commit: null

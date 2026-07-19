@@ -1,88 +1,223 @@
-# 文件目的：提供Controller與Portal Runtime生命週期的黑箱案例；所有critical案例必須100%通過。
-# 適用角色：測試實作者、功能測試執行者。
-# 狀態：Draft v0.1。
-
-suite_id: runtime-v0.1
+suite_id: runtime-v0.2
 fixture_type: SYNTHETIC
 cases:
-  - case_id: RUNTIME-001
-    purpose: 查詢已建立但停止的受管Instance。
-    scenario: RUNTIME
-    requirement_ids: [RT-01, RT-02]
-    critical: true
-    preconditions: [managed fixture exists, fixture is stopped]
-    input: {action: STATUS, instance_id: hermes-fixture-001}
-    expected: {http_status: 200, state: STOPPED, container_status: CREATED}
-    verdict_mode: AUTOMATED
-
-  - case_id: RUNTIME-003
-    purpose: 從Stopped啟動至Healthy。
-    scenario: RUNTIME
-    requirement_ids: [RT-03, RT-09]
-    critical: true
-    preconditions: [managed healthy fixture is stopped]
-    input: {action: START, instance_id: hermes-fixture-001}
-    expected: {accepted_status: 202, final_state: HEALTHY, hermes_status: AVAILABLE, llm_status: AVAILABLE}
-    verdict_mode: AUTOMATED
-
-  - case_id: RUNTIME-006
-    purpose: 已Healthy時再次Start為冪等No-op。
-    scenario: RUNTIME
-    requirement_ids: [RT-06]
-    critical: true
-    preconditions: [managed fixture is healthy]
-    input: {action: START, instance_id: hermes-fixture-001}
-    expected: {http_status: 200, final_state: HEALTHY, duplicate_container_created: false}
-    verdict_mode: AUTOMATED
-
-  - case_id: RUNTIME-008
-    purpose: 生命週期操作併發鎖定。
-    scenario: RUNTIME
-    requirement_ids: [RT-07]
-    critical: true
-    preconditions: [slow-start fixture is stopped]
-    input: {parallel_actions: [START, STOP], instance_id: hermes-fixture-slow}
-    expected: {one_operation_accepted: true, one_error_code: OPERATION_CONFLICT, conflict_http_status: 409}
-    verdict_mode: AUTOMATED
-
-  - case_id: RUNTIME-009
-    purpose: 啟動超過設定時間回受控Timeout。
-    scenario: RUNTIME
-    requirement_ids: [RT-08]
-    critical: true
-    preconditions: [fixture mode is slow-start, timeout is shorter than fixture delay]
-    input: {action: START, instance_id: hermes-fixture-slow}
-    expected: {initial_http_status: 202, final_state: ERROR, error_code: RUNTIME_START_TIMEOUT}
-    verdict_mode: AUTOMATED
-
-  - case_id: RUNTIME-012
-    purpose: 未受管Container不得被停止。
-    scenario: SECURITY
-    requirement_ids: [RT-10, RT-11]
-    critical: true
-    preconditions: [unmanaged fixture is running]
-    input: {action: STOP, instance_id: unmanaged-fixture-001}
-    expected: {http_status: 403, error_code: INSTANCE_NOT_MANAGED, fixture_still_running: true}
-    forbidden: [unmanaged fixture stopped, unmanaged fixture removed]
-    verdict_mode: AUTOMATED
-
-  - case_id: RUNTIME-013
-    purpose: Runtime Log中的測試Secret須被遮蔽。
-    scenario: SECURITY
-    requirement_ids: [RT-13, NF-03]
-    critical: true
-    preconditions: [secret-log fixture emitted TEST_SECRET_123456]
-    input: {action: LOGS, instance_id: hermes-fixture-secret, tail: 200}
-    expected: {http_status: 200, redacted: true}
-    forbidden: [TEST_SECRET_123456]
-    verdict_mode: AUTOMATED
-
-  - case_id: RUNTIME-014
-    purpose: Restart保留Volume資料。
-    scenario: RUNTIME
-    requirement_ids: [RT-05, NF-05]
-    critical: true
-    preconditions: [fixture wrote marker to persistent volume]
-    input: {action: RESTART, instance_id: hermes-fixture-persistent}
-    expected: {final_state: HEALTHY, persistent_marker_present: true}
-    verdict_mode: AUTOMATED
+- case_id: RUNTIME-001
+  purpose: 查詢已建立但停止的受管Instance。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-01
+  - RT-02
+  critical: true
+  preconditions:
+  - managed fixture exists
+  - fixture is stopped
+  input:
+    action: STATUS
+    instance_id: hermes-fixture-001
+  expected:
+    http_status: 200
+    state: STOPPED
+    container_status: CREATED
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-003
+  purpose: 從Stopped啟動至Healthy。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-03
+  - RT-09
+  critical: true
+  preconditions:
+  - managed healthy fixture is stopped
+  input:
+    action: START
+    instance_id: hermes-fixture-001
+  expected:
+    accepted_status: 202
+    accepted_state: STARTING
+    operation_action: START
+    final_state: HEALTHY
+    hermes_status: AVAILABLE
+    llm_status: AVAILABLE
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-004
+  purpose: 正常停止受管Instance。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-04
+  critical: true
+  preconditions:
+  - managed fixture is healthy
+  input:
+    action: STOP
+    instance_id: hermes-fixture-001
+  expected:
+    accepted_status: 202
+    accepted_state: STOPPING
+    operation_action: STOP
+    operation_id_present: true
+    final_state: STOPPED
+    container_removed: false
+    volumes_preserved: true
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-005
+  purpose: 正常重新啟動受管Instance。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-05
+  critical: true
+  preconditions:
+  - managed fixture is healthy
+  input:
+    action: RESTART
+    instance_id: hermes-fixture-001
+  expected:
+    accepted_status: 202
+    accepted_state: STOPPING
+    operation_action: RESTART
+    operation_id_present: true
+    final_state: HEALTHY
+    container_removed: false
+    duplicate_restart_executed: false
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-006
+  purpose: 已Healthy時再次Start為冪等No-op。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-06
+  critical: true
+  preconditions:
+  - managed fixture is healthy
+  input:
+    action: START
+    instance_id: hermes-fixture-001
+  expected:
+    http_status: 200
+    final_state: HEALTHY
+    duplicate_container_created: false
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-007
+  purpose: 已STOPPED時重複Stop的冪等No-op。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-06
+  critical: true
+  preconditions:
+  - managed fixture is stopped
+  input:
+    action: STOP
+    instance_id: hermes-fixture-001
+  expected:
+    http_status: 200
+    final_state: STOPPED
+    duplicate_stop_executed: false
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-008
+  purpose: 生命週期操作併發鎖定。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-07
+  critical: true
+  preconditions:
+  - slow-start fixture is stopped
+  input:
+    parallel_actions:
+    - START
+    - STOP
+    instance_id: hermes-fixture-slow
+  expected:
+    one_operation_accepted: true
+    one_error_code: OPERATION_CONFLICT
+    conflict_http_status: 409
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-009
+  purpose: 啟動超過設定時間回受控Timeout。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-08
+  critical: true
+  preconditions:
+  - fixture mode is slow-start
+  - timeout is shorter than fixture delay
+  input:
+    action: START
+    instance_id: hermes-fixture-slow
+  expected:
+    initial_http_status: 202
+    final_state: ERROR
+    error_code: RUNTIME_START_TIMEOUT
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-012
+  purpose: 未受管Container不得被停止。
+  scenario: SECURITY
+  requirement_ids:
+  - RT-10
+  - RT-11
+  critical: true
+  preconditions:
+  - unmanaged fixture is running
+  input:
+    action: STOP
+    instance_id: unmanaged-fixture-001
+  expected:
+    http_status: 403
+    error_code: INSTANCE_NOT_MANAGED
+    fixture_still_running: true
+  forbidden:
+  - unmanaged fixture stopped
+  - unmanaged fixture removed
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-013
+  purpose: Runtime Log中的測試Secret須被遮蔽。
+  scenario: SECURITY
+  requirement_ids:
+  - RT-13
+  - NF-03
+  critical: true
+  preconditions:
+  - secret-log fixture emitted TEST_SECRET_123456
+  input:
+    action: LOGS
+    instance_id: hermes-fixture-secret
+    tail: 200
+  expected:
+    http_status: 200
+    redacted: true
+  forbidden:
+  - TEST_SECRET_123456
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-014
+  purpose: Restart保留Volume資料。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-05
+  critical: true
+  preconditions:
+  - fixture wrote marker to persistent volume
+  input:
+    action: RESTART
+    instance_id: hermes-fixture-persistent
+  expected:
+    final_state: HEALTHY
+    persistent_marker_present: true
+  verdict_mode: AUTOMATED
+- case_id: RUNTIME-017
+  purpose: Restart仍執行中時重複Restart。
+  scenario: RUNTIME
+  requirement_ids:
+  - RT-06
+  critical: true
+  preconditions:
+  - Restart operation is running
+  input:
+    action: RESTART
+    instance_id: hermes-fixture-001
+  expected:
+    operation_action: RESTART
+    final_state: HEALTHY
+    same_operation_id: true
+    duplicate_restart_executed: false
+    http_status: 202
+    state:
+    - STOPPING
+    - STARTING
+  verdict_mode: AUTOMATED
