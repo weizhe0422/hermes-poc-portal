@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Attach isolated Docker Engine evidence to the approved case's JUnit row."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+
+def _properties(testcase: ET.Element) -> ET.Element:
+    node = testcase.find("properties")
+    if node is None:
+        node = ET.Element("properties")
+        testcase.insert(0, node)
+    return node
+
+
+def _case_id(testcase: ET.Element) -> str | None:
+    properties = testcase.find("properties")
+    if properties is None:
+        return None
+    for item in properties.findall("property"):
+        if item.get("name") == "test_case_id":
+            return item.get("value", item.text or "")
+    return None
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        print(
+            "usage: scripts/apply-controller-engine-evidence <evidence.json> <junit.xml>",
+            file=sys.stderr,
+        )
+        return 80
+
+    evidence_path = Path(sys.argv[1])
+    junit_path = Path(sys.argv[2])
+    try:
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        tree = ET.parse(junit_path)
+    except (OSError, json.JSONDecodeError, ET.ParseError) as exc:
+        print(f"unable to load engine evidence or JUnit: {exc}", file=sys.stderr)
+        return 80
+
+    case_id = evidence.get("test_case_id")
+    verdict = evidence.get("verdict")
+    engine_cases = {
+        "RUNTIME-003",
+        "RUNTIME-004",
+        "RUNTIME-005",
+        "RUNTIME-006",
+        "RUNTIME-007",
+        "RUNTIME-008",
+        "RUNTIME-009",
+        "RUNTIME-012",
+        "RUNTIME-013",
+        "RUNTIME-014",
+        "RUNTIME-017",
+    }
+    if case_id not in engine_cases or not isinstance(verdict, bool):
+        print("engine evidence has an invalid case or verdict", file=sys.stderr)
+        return 80
+
+    matches: list[tuple[ET.Element, ET.Element]] = []
+    for suite in tree.getroot().iter("testsuite"):
+        for testcase in suite.findall("testcase"):
+            if _case_id(testcase) == case_id:
+                matches.append((suite, testcase))
+    if len(matches) != 1:
+        print(f"expected one JUnit row for {case_id}; found {len(matches)}", file=sys.stderr)
+        return 80
+
+    suite, testcase = matches[0]
+    properties = _properties(testcase)
+    for name, value in (
+        ("engine_evidence", "PASS" if verdict else "FAIL"),
+        ("engine_evidence_file", evidence_path.name),
+        ("engine_evidence_phase", str(evidence.get("phase", case_id))),
+    ):
+        ET.SubElement(properties, "property", name=name, value=value)
+
+    if not verdict and testcase.find("failure") is None and testcase.find("error") is None:
+        failure = ET.SubElement(
+            testcase,
+            "failure",
+            message="isolated Docker Engine invariant failed",
+            type="ENGINE_INVARIANT_FAILURE",
+        )
+        failure.text = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+        suite.set("failures", str(int(suite.get("failures", "0")) + 1))
+
+    root = tree.getroot()
+    if root.tag == "testsuites":
+        root.set(
+            "failures",
+            str(sum(int(item.get("failures", "0")) for item in root.findall("testsuite"))),
+        )
+
+    tree.write(junit_path, encoding="utf-8", xml_declaration=True)
+
+    summary_path = junit_path.parent / "summary.json"
+    markdown_path = junit_path.parent / "summary.md"
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        markdown = markdown_path.read_text(encoding="utf-8")
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"unable to load phase summary: {exc}", file=sys.stderr)
+        return 80
+
+    summary_matches = [
+        result
+        for result in summary.get("results", [])
+        if result.get("properties", {}).get("test_case_id") == case_id
+    ]
+    if len(summary_matches) != 1:
+        print(
+            f"expected one phase-summary row for {case_id}; found {len(summary_matches)}",
+            file=sys.stderr,
+        )
+        return 80
+    result = summary_matches[0]
+    result["engine_evidence"] = "PASS" if verdict else "FAIL"
+    result["engine_evidence_file"] = evidence_path.name
+    if not verdict and result.get("status") != "FAIL":
+        result["status"] = "FAIL"
+        result["failure_classification"] = "ENGINE_INVARIANT_FAILURE"
+        result["failure"] = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+        summary["counts"]["passed"] = max(0, summary["counts"]["passed"] - 1)
+        summary["counts"]["failed"] += 1
+        summary["overall_status"] = "FAIL"
+        markdown = markdown.replace("Overall: **PASS**", "Overall: **FAIL**", 1)
+    markdown += (
+        f"\n## Isolated Engine evidence — {case_id}\n\n"
+        f"- Verdict: **{'PASS' if verdict else 'FAIL'}**\n"
+        f"- Artifact: `{evidence_path.name}`\n"
+    )
+    summary_path.write_text(
+        json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    markdown_path.write_text(markdown, encoding="utf-8")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

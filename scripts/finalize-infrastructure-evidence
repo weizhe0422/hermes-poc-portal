@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Apply outer-orchestrator evidence without changing Frozen Expected Results."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+import xml.etree.ElementTree as ET
+
+
+FROZEN_METADATA = {
+    "case_source": "frozen-infrastructure-case",
+    "coverage_claim": "case-level",
+    "acceptance_status": "case-evaluated",
+    "golden_status": "frozen-v0.2.1",
+    "evidence_kind": "black-box",
+}
+
+
+def _properties(testcase: ET.Element) -> ET.Element:
+    node = testcase.find("properties")
+    if node is None:
+        node = ET.Element("properties")
+        testcase.insert(0, node)
+    return node
+
+
+def _property(testcase: ET.Element, name: str) -> str | None:
+    properties = testcase.find("properties")
+    if properties is None:
+        return None
+    for item in properties.findall("property"):
+        if item.get("name") == name:
+            return item.get("value", item.text or "")
+    return None
+
+
+def _set_property(testcase: ET.Element, name: str, value: str) -> None:
+    properties = _properties(testcase)
+    for item in properties.findall("property"):
+        if item.get("name") == name:
+            item.set("value", value)
+            item.text = None
+            return
+    ET.SubElement(properties, "property", name=name, value=value)
+
+
+def _case_rows(root: ET.Element) -> dict[str, list[ET.Element]]:
+    rows: dict[str, list[ET.Element]] = {}
+    for testcase in root.iter("testcase"):
+        case_id = _property(testcase, "test_case_id")
+        if case_id:
+            rows.setdefault(case_id, []).append(testcase)
+    return rows
+
+
+def _add_failure(testcase: ET.Element, evidence: dict[str, object]) -> None:
+    if testcase.find("failure") is not None or testcase.find("error") is not None:
+        return
+    failure = ET.SubElement(
+        testcase,
+        "failure",
+        type="OUTER_EVIDENCE_FAILURE",
+        message="Frozen infrastructure Expected Result was not satisfied",
+    )
+    failure.text = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
+
+
+def _refresh_counts(root: ET.Element) -> None:
+    for suite in root.iter("testsuite"):
+        direct = suite.findall("testcase")
+        if not direct:
+            continue
+        suite.set("tests", str(len(direct)))
+        suite.set(
+            "failures",
+            str(sum(row.find("failure") is not None for row in direct)),
+        )
+        suite.set("errors", str(sum(row.find("error") is not None for row in direct)))
+        suite.set("skipped", str(sum(row.find("skipped") is not None for row in direct)))
+    if root.tag == "testsuites":
+        suites = root.findall("testsuite")
+        root.set("tests", str(sum(int(suite.get("tests", "0")) for suite in suites)))
+        root.set(
+            "failures",
+            str(sum(int(suite.get("failures", "0")) for suite in suites)),
+        )
+        root.set("errors", str(sum(int(suite.get("errors", "0")) for suite in suites)))
+        root.set("skipped", str(sum(int(suite.get("skipped", "0")) for suite in suites)))
+
+
+def _patch_portal(evidence: dict[str, object], junit_path: Path) -> None:
+    tree = ET.parse(junit_path)
+    rows = _case_rows(tree.getroot())
+    cases = evidence.get("cases")
+    if not isinstance(cases, dict):
+        raise ValueError("portal evidence must contain a cases object")
+    required = {
+        "SECURITY-001",
+        "SECURITY-002",
+        "SECURITY-003",
+        "EXECUTION-004",
+        "ARTIFACT-001",
+    }
+    if set(cases) != required:
+        raise ValueError("portal outer evidence inventory is incomplete")
+    for case_id, record in cases.items():
+        if not isinstance(record, dict) or not isinstance(record.get("verdict"), bool):
+            raise ValueError(f"{case_id} outer evidence has no boolean verdict")
+        matches = rows.get(case_id, [])
+        if len(matches) != 1:
+            raise ValueError(f"expected one JUnit row for {case_id}; found {len(matches)}")
+        testcase = matches[0]
+        _set_property(testcase, "outer_evidence", "PASS" if record["verdict"] else "FAIL")
+        _set_property(testcase, "outer_evidence_file", evidence.get("artifact", "infrastructure-evidence.json"))
+        if not record["verdict"]:
+            _add_failure(testcase, record)
+    _refresh_counts(tree.getroot())
+    tree.write(junit_path, encoding="utf-8", xml_declaration=True)
+
+
+def _write_controller(evidence: dict[str, object], junit_path: Path) -> None:
+    record = evidence.get("case")
+    if not isinstance(record, dict):
+        raise ValueError("controller evidence must contain a case object")
+    if record.get("test_case_id") != "CONTROLLER-ENV-001" or not isinstance(
+        record.get("verdict"), bool
+    ):
+        raise ValueError("invalid CONTROLLER-ENV-001 evidence")
+    suite = ET.Element(
+        "testsuite",
+        name="controller-environment-v0.2",
+        tests="1",
+        failures="0" if record["verdict"] else "1",
+        errors="0",
+        skipped="0",
+        time="0",
+    )
+    testcase = ET.SubElement(
+        suite,
+        "testcase",
+        classname="controller_e2e.infrastructure",
+        name="CONTROLLER-ENV-001 isolated Controller E2E environment",
+        time="0",
+    )
+    metadata = {
+        "test_case_id": "CONTROLLER-ENV-001",
+        "requirement_ids": "E2E-03,E2E-04",
+        "critical": "true",
+        "milestone": "T-M0",
+        "retry_policy": "NO_RETRY",
+        "hermes.case_source": FROZEN_METADATA["case_source"],
+        "hermes.coverage_claim": FROZEN_METADATA["coverage_claim"],
+        "hermes.acceptance_status": FROZEN_METADATA["acceptance_status"],
+        "hermes.golden_status": FROZEN_METADATA["golden_status"],
+        "hermes.evidence_kind": "controller-isolation",
+        "outer_evidence": "PASS" if record["verdict"] else "FAIL",
+        "outer_evidence_file": str(evidence.get("artifact", "controller-environment.json")),
+    }
+    properties = ET.SubElement(testcase, "properties")
+    for name, value in metadata.items():
+        ET.SubElement(properties, "property", name=name, value=value)
+    if not record["verdict"]:
+        _add_failure(testcase, record)
+    junit_path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(suite).write(junit_path, encoding="utf-8", xml_declaration=True)
+
+
+def main() -> int:
+    if len(sys.argv) != 4 or sys.argv[1] not in {"portal", "controller"}:
+        print(
+            "usage: scripts/finalize-infrastructure-evidence "
+            "<portal|controller> <evidence.json> <junit.xml>",
+            file=sys.stderr,
+        )
+        return 80
+    mode = sys.argv[1]
+    evidence_path = Path(sys.argv[2])
+    junit_path = Path(sys.argv[3])
+    try:
+        evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+        evidence["artifact"] = evidence_path.name
+        if mode == "portal":
+            _patch_portal(evidence, junit_path)
+        else:
+            _write_controller(evidence, junit_path)
+    except (OSError, ValueError, json.JSONDecodeError, ET.ParseError) as exc:
+        print(f"unable to finalize infrastructure evidence: {exc}", file=sys.stderr)
+        return 80
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

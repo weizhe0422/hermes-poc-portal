@@ -1,0 +1,58 @@
+#!/bin/sh
+set -eu
+
+run_id=${1:?run_id is required}
+
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
+    echo "invalid run_id" >&2
+    exit 70
+    ;;
+esac
+if [ "${#run_id}" -gt 63 ]; then echo "invalid run_id" >&2; exit 70; fi
+
+containers=$(docker ps -aq --filter "label=poc.test-run=$run_id")
+if [ -n "$containers" ]; then
+  for container_id in $containers; do
+    fixture_label=$(docker inspect --format '{{index .Config.Labels "poc.fixture"}}' "$container_id")
+    if [ "$fixture_label" != true ]; then
+      echo "refusing to remove non-fixture container labelled for $run_id" >&2
+      exit 70
+    fi
+  done
+  docker rm -f $containers >/dev/null
+fi
+
+volumes=$(docker volume ls -q --filter "label=poc.test-run=$run_id")
+if [ -n "$volumes" ]; then
+  for volume_name in $volumes; do
+    fixture_label=$(docker volume inspect --format '{{index .Labels "poc.fixture"}}' "$volume_name")
+    if [ "$fixture_label" != true ]; then
+      echo "refusing to remove non-fixture volume labelled for $run_id" >&2
+      exit 70
+    fi
+  done
+  docker volume rm $volumes >/dev/null
+fi
+
+networks=$(docker network ls -q --filter "label=poc.test-run=$run_id")
+if [ -n "$networks" ]; then
+  for network_id in $networks; do
+    fixture_label=$(docker network inspect --format '{{index .Labels "poc.fixture"}}' "$network_id")
+    if [ "$fixture_label" != true ]; then
+      echo "refusing to remove non-fixture network labelled for $run_id" >&2
+      exit 70
+    fi
+  done
+  docker network rm $networks >/dev/null
+fi
+
+remaining_containers=$(docker ps -aq --filter "label=poc.test-run=$run_id")
+remaining_volumes=$(docker volume ls -q --filter "label=poc.test-run=$run_id")
+remaining_networks=$(docker network ls -q --filter "label=poc.test-run=$run_id")
+if [ -n "$remaining_containers$remaining_volumes$remaining_networks" ]; then
+  echo "run-scoped resources remain after cleanup" >&2
+  exit 1
+fi
+
+printf '{"run_id":"%s","cleanup_verified":true}\n' "$run_id"

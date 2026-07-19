@@ -1,0 +1,172 @@
+name: hermes-portal-e2e-${RUN_ID:-local}
+
+x-test-labels: &test-labels
+  poc.test-run: ${RUN_ID:-local}
+  poc.test-suite: portal-e2e
+
+services:
+  docker-engine-test:
+    image: ${DOCKER_ENGINE_TEST_IMAGE:-docker:28.0.1-dind-rootless}
+    privileged: true
+    environment:
+      DOCKER_TLS_CERTDIR: ""
+      DOCKER_HOST: unix:///run/user/1000/docker.sock
+    command:
+      - --host=tcp://0.0.0.0:2375
+      - --host=unix:///run/user/1000/docker.sock
+    labels: *test-labels
+    networks:
+      controller-engine-network:
+        aliases: [docker-engine-test]
+    volumes:
+      - docker-engine-data:/home/rootless/.local/share/docker
+    healthcheck:
+      test: ["CMD", "docker", "info"]
+      interval: 2s
+      timeout: 2s
+      retries: 60
+      start_period: 5s
+
+  hermes-under-test:
+    image: ${HERMES_FIXTURE_IMAGE:-hermes-poc-hermes-fixture:0.1.0}
+    build:
+      context: ./tests/hermes-fixture
+      dockerfile: Dockerfile
+      args:
+        PYTHON_IMAGE: ${TEST_PYTHON_IMAGE:-python:3.13.5-slim-bookworm}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    environment:
+      FIXTURE_MODE: HEALTHY
+      FIXTURE_INSTANCE_ID: hermes-fixture-001
+      FIXTURE_RUN_ID: ${RUN_ID:-local}
+      FIXTURE_MODEL_NAME: synthetic-fixture-model
+      SPEC_VERSION: 0.1.0
+    labels: *test-labels
+    networks:
+      agent-network:
+        aliases: [hermes]
+    expose: ["8000"]
+    restart: "no"
+
+  controller-under-test:
+    image: ${CONTROLLER_IMAGE:-hermes-poc-controller:0.1.0}
+    environment:
+      DOCKER_HOST: tcp://docker-engine-test:2375
+      DEFAULT_INSTANCE_ID: hermes-fixture-001
+      CONTROLLER_MANAGED_LABEL: poc.managed=true
+      HERMES_BASE_URL: http://hermes:8000
+      HERMES_HEALTH_PATH: /health
+      HERMES_LLM_BASE_URL: http://hermes:8000
+      HERMES_MODEL_NAME: synthetic-fixture-model
+      HERMES_START_TIMEOUT_SECONDS: "30"
+      HERMES_STOP_TIMEOUT_SECONDS: "15"
+      AGENT_REQUEST_TIMEOUT_SECONDS: "10"
+      SPEC_VERSION: 0.1.0
+      LOG_LEVEL: INFO
+    depends_on:
+      docker-engine-test:
+        condition: service_healthy
+      hermes-under-test:
+        condition: service_healthy
+    labels: *test-labels
+    networks:
+      portal-network:
+        aliases: [controller]
+      agent-network: {}
+      controller-engine-network: {}
+    expose: ["8090"]
+    restart: "no"
+
+  portal-under-test:
+    image: ${PORTAL_IMAGE:-hermes-poc-portal:0.1.0}
+    environment:
+      PORTAL_PORT: "8080"
+      PORTAL_DATABASE_URL: sqlite:////data/portal.db
+      DEFAULT_INSTANCE_ID: hermes-fixture-001
+      CONTROLLER_BASE_URL: http://controller:8090
+      HERMES_BASE_URL: http://hermes:8000
+      HERMES_HEALTH_PATH: /health
+      HERMES_LLM_BASE_URL: http://hermes:8000
+      HERMES_MODEL_NAME: synthetic-fixture-model
+      HERMES_START_TIMEOUT_SECONDS: "30"
+      HERMES_STOP_TIMEOUT_SECONDS: "15"
+      AGENT_REQUEST_TIMEOUT_SECONDS: "10"
+      CONTROLLER_MANAGED_LABEL: poc.managed=true
+      LOG_LEVEL: INFO
+      SPEC_VERSION: 0.1.0
+    labels: *test-labels
+    networks:
+      e2e-network:
+        aliases: [portal]
+      portal-network: {}
+      agent-network: {}
+    expose: ["8080"]
+    ports:
+      - "${PORTAL_HOST_BIND_ADDRESS:-127.0.0.1}:${PORTAL_HOST_PORT:-8080}:8080"
+    volumes:
+      - portal-data:/data
+    depends_on:
+      controller-under-test:
+        condition: service_started
+      hermes-under-test:
+        condition: service_healthy
+    restart: "no"
+
+  portal-e2e-runner:
+    image: ${PORTAL_E2E_IMAGE:-hermes-poc-portal-e2e:0.1.0}
+    build:
+      context: ./tests/portal-e2e
+      dockerfile: Dockerfile
+      args:
+        PLAYWRIGHT_IMAGE: ${PLAYWRIGHT_IMAGE:-mcr.microsoft.com/playwright:v1.61.0-noble}
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    environment:
+      PORTAL_BASE_URL: ${PORTAL_BASE_URL:-http://portal:8080}
+      CONTROLLER_BASE_URL: http://controller:8090
+      HERMES_BASE_URL: http://hermes:8000
+      RESULTS_DIR: /test-results/${RUN_ID:-local}/portal-e2e
+      RUN_ID: ${RUN_ID:-local}
+      SPEC_ROOT: /spec
+      CONTRACT_TAG: ${CONTRACT_TAG:-contract-m0-m1-v0.2.1}
+      CONTRACT_COMMIT: ${CONTRACT_COMMIT:-}
+      CONTRACT_VERSION: ${CONTRACT_VERSION:-0.2.1}
+      PORTAL_READY_TIMEOUT_MS: ${PORTAL_READY_TIMEOUT_MS:-60000}
+    depends_on:
+      portal-under-test:
+        condition: service_started
+    labels: *test-labels
+    networks:
+      - e2e-network
+    volumes:
+      - type: bind
+        source: ./hermes-poc-specification-v0.1
+        target: /spec
+        read_only: true
+      - type: volume
+        source: test-results
+        target: /test-results
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+networks:
+  e2e-network:
+    internal: true
+    labels: *test-labels
+  portal-network:
+    labels: *test-labels
+  agent-network:
+    internal: true
+    labels: *test-labels
+  controller-engine-network:
+    internal: true
+    labels: *test-labels
+
+volumes:
+  docker-engine-data:
+    labels: *test-labels
+  portal-data:
+    labels: *test-labels
+  test-results:
+    labels: *test-labels

@@ -1,0 +1,27 @@
+#!/bin/sh
+set -eu
+
+run_id=${1:?run_id is required}
+persistent_instance_id=${2:-hermes-fixture-persistent}
+
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
+    echo "invalid run_id" >&2
+    exit 70
+    ;;
+esac
+if [ "${#run_id}" -gt 63 ]; then echo "invalid run_id" >&2; exit 70; fi
+
+docker ps -a \
+  --filter "label=poc.test-run=$run_id" \
+  --format '{{json .}}'
+
+marker_present=false
+if docker inspect "$persistent_instance_id" >/dev/null 2>&1; then
+  if docker exec "$persistent_instance_id" /bin/sh -c \
+    'test -n "$FIXTURE_MARKER_VALUE" && test "$(cat "$FIXTURE_MARKER_PATH" 2>/dev/null)" = "$FIXTURE_MARKER_VALUE"'; then
+    marker_present=true
+  fi
+fi
+
+printf '{"test_case_id":"RUNTIME-014","requirement_ids":["RT-05"],"persistent_marker_present":%s}\n' "$marker_present" >&2

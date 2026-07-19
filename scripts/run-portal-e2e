@@ -1,0 +1,283 @@
+#!/bin/sh
+set -eu
+
+mode=run
+for argument in "$@"; do
+  case "$argument" in
+    --build-only) mode=build ;;
+    *) echo "usage: scripts/run-portal-e2e [--build-only]" >&2; exit 70 ;;
+  esac
+done
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(dirname "$script_dir")
+cd "$repo_root"
+
+branch=$(git branch --show-current)
+if [ "$branch" != "test/t-m0-m1" ]; then
+  echo "refusing to run from branch $branch; expected test/t-m0-m1" >&2
+  exit 70
+fi
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  echo "source tree must be clean before an E2E run" >&2
+  exit 70
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker daemon is unavailable" >&2
+  exit 70
+fi
+
+contract_tag=${CONTRACT_TAG:-contract-m0-m1-v0.2.1}
+contract_version=${CONTRACT_VERSION:-0.2.1}
+if [ "$contract_tag" != contract-m0-m1-v0.2.1 ] || [ "$contract_version" != 0.2.1 ]; then
+  echo "T-M0/T-M1 must use Frozen Contract v0.2.1" >&2
+  exit 70
+fi
+contract_commit=$(git rev-parse "$contract_tag^{commit}" 2>/dev/null || true)
+if [ "${#contract_commit}" -ne 40 ]; then
+  echo "Frozen Contract tag is unavailable" >&2
+  exit 70
+fi
+if ! git diff --exit-code "$contract_tag" -- \
+  hermes-poc-specification-v0.1/contracts \
+  hermes-poc-specification-v0.1/test-cases/infrastructure/cases.yaml \
+  hermes-poc-specification-v0.1/test-cases/runtime/cases.yaml >/dev/null; then
+  echo "Frozen Contract or Expected Result differs from $contract_tag" >&2
+  exit 70
+fi
+export CONTRACT_TAG="$contract_tag"
+export CONTRACT_VERSION="$contract_version"
+export CONTRACT_COMMIT="$contract_commit"
+
+if [ "${PORTAL_HOST_PORT:-8080}" != 8080 ]; then
+  echo "SECURITY-001 freezes the Portal Host port at 8080" >&2
+  exit 70
+fi
+export PORTAL_HOST_PORT=8080
+export PORTAL_HOST_BIND_ADDRESS=${PORTAL_HOST_BIND_ADDRESS:-127.0.0.1}
+
+run_id=${RUN_ID:-"$(date -u +%Y%m%dt%H%M%Sz)-$$"}
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
+    echo "RUN_ID must be one lowercase Compose-safe segment" >&2; exit 70 ;;
+esac
+if [ "${#run_id}" -gt 63 ]; then
+  echo "RUN_ID must be at most 63 characters" >&2
+  exit 70
+fi
+results_root=${TEST_RESULTS_ROOT:-"$repo_root/test-results"}
+run_results="$results_root/$run_id"
+if [ -e "$run_results" ]; then
+  echo "refusing to reuse existing run directory: $run_results" >&2
+  exit 70
+fi
+portal_results="$run_results/portal-e2e"
+mkdir -p "$portal_results"
+chmod 0777 "$portal_results"
+
+export RUN_ID="$run_id"
+export TEST_RESULTS_ROOT="$results_root"
+export TEST_RUN_RESULTS_DIR="$run_results"
+export PORTAL_IMAGE=${PORTAL_IMAGE:-hermes-poc-portal:0.1.0}
+export CONTROLLER_IMAGE=${CONTROLLER_IMAGE:-hermes-poc-controller:0.1.0}
+export PORTAL_E2E_IMAGE=${PORTAL_E2E_IMAGE:-hermes-poc-portal-e2e:0.1.0}
+export HERMES_FIXTURE_IMAGE=${HERMES_FIXTURE_IMAGE:-hermes-poc-hermes-fixture:0.1.0}
+export DOCKER_ENGINE_TEST_IMAGE=${DOCKER_ENGINE_TEST_IMAGE:-docker:28.0.1-dind-rootless}
+
+compose="docker compose -f $repo_root/compose.e2e.portal.yaml"
+artifact_initialized=false
+
+copy_runner_results() {
+  runner_id=$($compose ps -aq portal-e2e-runner 2>/dev/null || true)
+  if [ -n "$runner_id" ]; then
+    docker cp "$runner_id:/test-results/$run_id/portal-e2e/." "$portal_results/" \
+      >/dev/null 2>&1 || true
+  fi
+}
+
+emergency_cleanup() {
+  failure_status=$?
+  trap - EXIT INT TERM
+  if [ "$artifact_initialized" = true ]; then
+    copy_runner_results
+    $compose logs --no-color \
+      | sed 's/TEST_SECRET_123456/[REDACTED]/g' \
+      > "$portal_results/compose.log" 2>&1 || true
+    $compose down --volumes --remove-orphans \
+      > "$portal_results/compose-down.log" 2>&1 || true
+    printf '{"run_id":"%s","compose_down_verified":false}\n' "$run_id" \
+      > "$portal_results/cleanup.json"
+    printf '{"orchestration_completed":false,"runner_passed":false,"runner_exit_code":%s}\n' \
+      "$failure_status" > "$portal_results/runner-status.json"
+    python3 "$repo_root/scripts/collect-test-results" "$run_id" >/dev/null 2>&1 || true
+  else
+    $compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
+  exit "$failure_status"
+}
+trap emergency_cleanup EXIT
+trap 'exit 70' INT TERM
+
+if ! $compose build portal-e2e-runner; then
+  exit 10
+fi
+if [ "$mode" = build ]; then
+  trap - EXIT INT TERM
+  rmdir "$portal_results" "$run_results" 2>/dev/null || true
+  echo "Portal E2E runner image built successfully"
+  exit 0
+fi
+
+platform_commit=${PLATFORM_COMMIT:-}
+case "$platform_commit" in
+  ''|*[!0-9a-f]*) echo "PLATFORM_COMMIT must be a lowercase full candidate commit" >&2; exit 70 ;;
+esac
+if [ "${#platform_commit}" -ne 40 ] \
+  || ! git cat-file -e "$platform_commit^{commit}" 2>/dev/null; then
+  echo "PLATFORM_COMMIT is not an available 40-character candidate commit" >&2
+  exit 70
+fi
+for image in "$PORTAL_IMAGE" "$CONTROLLER_IMAGE"; do
+  if ! docker image inspect "$image" >/dev/null 2>&1; then
+    echo "candidate image is unavailable: $image" >&2
+    exit 70
+  fi
+done
+portal_revision=$(docker image inspect --format \
+  '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$PORTAL_IMAGE")
+if [ "$portal_revision" != "$platform_commit" ]; then
+  echo "Portal image revision does not match PLATFORM_COMMIT" >&2
+  exit 70
+fi
+controller_revision=$(docker image inspect --format \
+  '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CONTROLLER_IMAGE")
+if [ "$controller_revision" != "$platform_commit" ]; then
+  echo "Controller image revision does not match PLATFORM_COMMIT" >&2
+  exit 70
+fi
+if ! $compose build hermes-under-test; then
+  exit 10
+fi
+if ! docker image inspect "$DOCKER_ENGINE_TEST_IMAGE" >/dev/null 2>&1; then
+  if ! docker pull "$DOCKER_ENGINE_TEST_IMAGE"; then
+    exit 10
+  fi
+fi
+portal_image_id=$(docker image inspect --format '{{.Id}}' "$PORTAL_IMAGE")
+controller_image_id=$(docker image inspect --format '{{.Id}}' "$CONTROLLER_IMAGE")
+portal_e2e_image_id=$(docker image inspect --format '{{.Id}}' "$PORTAL_E2E_IMAGE")
+hermes_fixture_image_id=$(docker image inspect --format '{{.Id}}' "$HERMES_FIXTURE_IMAGE")
+docker_engine_test_image_id=$(docker image inspect --format '{{.Id}}' "$DOCKER_ENGINE_TEST_IMAGE")
+
+cat > "$run_results/manifest.yaml" <<EOF
+{
+  "run_id": "$run_id",
+  "fixture_type": "SYNTHETIC",
+  "spec_version": "0.1.0",
+  "contract_tag": "$contract_tag",
+  "contract_commit": "$contract_commit",
+  "contract_version": "$contract_version",
+  "git_commit": "$(git rev-parse HEAD)",
+  "git_branch": "$branch",
+  "platform_commit": "$platform_commit",
+  "test_suite": "portal-e2e",
+  "images": {
+    "controller": "$CONTROLLER_IMAGE",
+    "docker_engine_test": "$DOCKER_ENGINE_TEST_IMAGE",
+    "hermes_fixture": "$HERMES_FIXTURE_IMAGE",
+    "portal": "$PORTAL_IMAGE",
+    "portal_e2e": "$PORTAL_E2E_IMAGE"
+  },
+  "image_ids": {
+    "controller": "$controller_image_id",
+    "docker_engine_test": "$docker_engine_test_image_id",
+    "hermes_fixture": "$hermes_fixture_image_id",
+    "portal": "$portal_image_id",
+    "portal_e2e": "$portal_e2e_image_id"
+  },
+  "executed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+artifact_initialized=true
+
+if ! $compose up -d \
+  docker-engine-test hermes-under-test controller-under-test portal-under-test; then
+  exit 40
+fi
+if ! $compose up -d --no-deps portal-e2e-runner; then
+  exit 40
+fi
+
+portal_id=$($compose ps -aq portal-under-test)
+runner_id=$($compose ps -aq portal-e2e-runner)
+docker wait "$runner_id" >/dev/null
+runner_status=$(docker inspect --format '{{.State.ExitCode}}' "$runner_id")
+copy_status=0
+if ! docker cp "$runner_id:/test-results/$run_id/portal-e2e/." "$portal_results/"; then
+  copy_status=1
+fi
+logs_status=0
+if ! $compose logs --no-color \
+  | sed 's/TEST_SECRET_123456/[REDACTED]/g' \
+  > "$portal_results/compose.log"; then
+  logs_status=1
+fi
+
+evidence_status=0
+infrastructure_evidence="$portal_results/infrastructure-evidence.json"
+if ! python3 "$repo_root/scripts/collect-portal-infrastructure-evidence" \
+  "$portal_id" "$runner_id" "$run_results" "$repo_root" \
+  "$infrastructure_evidence"; then
+  evidence_status=1
+fi
+if [ -f "$portal_results/junit/portal-e2e.xml" ]; then
+  if ! python3 "$repo_root/scripts/finalize-infrastructure-evidence" portal \
+    "$infrastructure_evidence" "$portal_results/junit/portal-e2e.xml"; then
+    evidence_status=1
+  fi
+else
+  evidence_status=1
+fi
+
+cleanup_status=0
+if $compose down --volumes --remove-orphans \
+  > "$portal_results/compose-down.log" 2>&1; then
+  printf '{"run_id":"%s","compose_down_verified":true}\n' "$run_id" \
+    > "$portal_results/cleanup.json"
+else
+  printf '{"run_id":"%s","compose_down_verified":false}\n' "$run_id" \
+    > "$portal_results/cleanup.json"
+  cleanup_status=1
+fi
+trap - EXIT INT TERM
+
+runner_passed=true
+if [ "$runner_status" -ne 0 ]; then runner_passed=false; fi
+compose_logs_verified=true
+if [ "$logs_status" -ne 0 ]; then compose_logs_verified=false; fi
+cleanup_verified=true
+if [ "$cleanup_status" -ne 0 ]; then cleanup_verified=false; fi
+source_tree_unchanged=true
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  source_tree_unchanged=false
+  evidence_status=1
+fi
+printf '%s\n' \
+  "{\"orchestration_completed\":true,\"runner_passed\":$runner_passed,\"compose_logs_verified\":$compose_logs_verified,\"cleanup_verified\":$cleanup_verified,\"source_tree_unchanged\":$source_tree_unchanged,\"runner_exit_code\":$runner_status,\"copy_exit_code\":$copy_status,\"evidence_exit_code\":$evidence_status}" \
+  > "$portal_results/runner-status.json"
+
+artifact_status=0
+python3 "$repo_root/scripts/collect-test-results" "$run_id" || artifact_status=$?
+if [ "$runner_status" -ne 0 ]; then
+  echo "Portal Infrastructure acceptance failed; artifacts: $run_results" >&2
+  exit 40
+fi
+if [ "$copy_status" -ne 0 ] \
+  || [ "$logs_status" -ne 0 ] \
+  || [ "$cleanup_status" -ne 0 ] \
+  || [ "$evidence_status" -ne 0 ] \
+  || [ "$artifact_status" -ne 0 ]; then
+  echo "Portal evidence or artifact validation failed; artifacts: $run_results" >&2
+  exit 80
+fi
+echo "Portal Infrastructure acceptance passed; artifacts: $run_results"

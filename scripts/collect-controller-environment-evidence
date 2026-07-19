@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Collect and finalize isolation evidence for CONTROLLER-ENV-001."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+from typing import Any
+
+
+def _docker_json(*arguments: str) -> Any:
+    result = subprocess.run(
+        ["docker", *arguments],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def _inspect(container_id: str) -> dict[str, Any]:
+    documents = _docker_json("inspect", container_id)
+    if not isinstance(documents, list) or len(documents) != 1:
+        raise ValueError(f"no unique inspect result for {container_id}")
+    return documents[0]
+
+
+def _logical_networks(container: dict[str, Any]) -> list[str]:
+    result: list[str] = []
+    networks = container.get("NetworkSettings", {}).get("Networks", {}) or {}
+    for network_name in networks:
+        network = _docker_json("network", "inspect", network_name)[0]
+        labels = network.get("Labels") or {}
+        result.append(labels.get("com.docker.compose.network", network_name))
+    return sorted(result)
+
+
+def _pre(argv: list[str]) -> int:
+    if len(argv) != 6:
+        raise ValueError(
+            "pre requires <run-id> <runner> <controller> <engine> <output>"
+        )
+    run_id, runner_id, controller_id, engine_id, output_raw = argv[1:]
+    runner = _inspect(runner_id)
+    controller = _inspect(controller_id)
+    engine = _inspect(engine_id)
+    runner_networks = _logical_networks(runner)
+    controller_networks = _logical_networks(controller)
+    engine_networks = _logical_networks(engine)
+    mounts = runner.get("Mounts") or []
+    controller_mounts = controller.get("Mounts") or []
+    socket_mount = any(
+        "docker.sock" in str(mount.get(field) or "")
+        for mount in mounts
+        for field in ("Source", "Destination")
+    )
+    controller_socket_mount = any(
+        "docker.sock" in str(mount.get(field) or "")
+        for mount in controller_mounts
+        for field in ("Source", "Destination")
+    )
+    results_mount = [
+        mount for mount in mounts if mount.get("Destination") == "/test-results"
+    ]
+    spec_mount = [mount for mount in mounts if mount.get("Destination") == "/spec"]
+    runner_privileged = bool(
+        runner.get("HostConfig", {}).get("Privileged")
+    )
+    controller_privileged = bool(
+        controller.get("HostConfig", {}).get("Privileged")
+    )
+    controller_environment = {
+        name: value
+        for item in controller.get("Config", {}).get("Env", []) or []
+        if "=" in item
+        for name, value in (item.split("=", 1),)
+    }
+    controller_docker_host = controller_environment.get("DOCKER_HOST")
+    runner_labels = runner.get("Config", {}).get("Labels") or {}
+    controller_labels = controller.get("Config", {}).get("Labels") or {}
+    engine_labels = engine.get("Config", {}).get("Labels") or {}
+    labels_match = all(
+        labels.get("poc.test-run") == run_id
+        for labels in (runner_labels, controller_labels, engine_labels)
+    )
+    preconditions = {
+        "is_independent_container": len(
+            {runner.get("Id"), controller.get("Id"), engine.get("Id")}
+        )
+        == 3,
+        "uses_isolated_docker_engine": (
+            engine.get("HostConfig", {}).get("Privileged") is True
+            and engine_networks == ["docker-engine-test-network"]
+            and controller_networks
+            == ["controller-e2e-network", "docker-engine-test-network"]
+        ),
+        "has_docker_socket": socket_mount,
+        "can_affect_dev_or_prod_containers": (
+            socket_mount
+            or runner_privileged
+            or "docker-engine-test-network" in runner_networks
+            or controller_socket_mount
+            or controller_privileged
+            or controller_docker_host != "tcp://docker-engine-test:2375"
+        ),
+        "controller_has_docker_socket": controller_socket_mount,
+        "controller_is_privileged": controller_privileged,
+        "controller_docker_host": controller_docker_host,
+        "runner_networks": runner_networks,
+        "results_is_independent_volume": (
+            len(results_mount) == 1 and results_mount[0].get("Type") == "volume"
+        ),
+        "spec_is_read_only": (
+            len(spec_mount) == 1 and spec_mount[0].get("RW") is False
+        ),
+        "run_labels_match": labels_match,
+    }
+    preconditions["verdict"] = (
+        preconditions["is_independent_container"]
+        and preconditions["uses_isolated_docker_engine"]
+        and not preconditions["has_docker_socket"]
+        and not preconditions["can_affect_dev_or_prod_containers"]
+        and runner_networks == ["controller-e2e-network"]
+        and preconditions["results_is_independent_volume"]
+        and preconditions["spec_is_read_only"]
+        and labels_match
+    )
+    output = Path(output_raw)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2.0",
+                "run_id": run_id,
+                "preconditions": preconditions,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return 0
+
+
+def _final(argv: list[str]) -> int:
+    if len(argv) != 5:
+        raise ValueError(
+            "final requires <pre.json> <inner-cleanup.json> <outer-cleanup.json> <output>"
+        )
+    pre_path, inner_path, outer_path, output_raw = map(Path, argv[1:])
+    pre = json.loads(pre_path.read_text(encoding="utf-8"))
+    inner = json.loads(inner_path.read_text(encoding="utf-8"))
+    outer = json.loads(outer_path.read_text(encoding="utf-8"))
+    preconditions = pre.get("preconditions")
+    if not isinstance(preconditions, dict):
+        raise ValueError("pre evidence has no preconditions")
+    cleanup_limited = inner.get("cleanup_verified") is True
+    compose_down = outer.get("compose_down_verified") is True
+    case = {
+        "test_case_id": "CONTROLLER-ENV-001",
+        "is_independent_container": preconditions.get("is_independent_container"),
+        "uses_isolated_docker_engine": preconditions.get("uses_isolated_docker_engine"),
+        "has_docker_socket": preconditions.get("has_docker_socket"),
+        "can_affect_dev_or_prod_containers": preconditions.get(
+            "can_affect_dev_or_prod_containers"
+        ),
+        "cleanup_limited_to_run_id": cleanup_limited,
+        "compose_down_verified": compose_down,
+    }
+    case["verdict"] = (
+        preconditions.get("verdict") is True and cleanup_limited and compose_down
+    )
+    output = Path(output_raw)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(
+        json.dumps(
+            {
+                "schema_version": "0.2.0",
+                "contract_tag": "contract-m0-m1-v0.2.1",
+                "case": case,
+            },
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return 0
+
+
+def main() -> int:
+    try:
+        if len(sys.argv) < 2:
+            raise ValueError("mode is required")
+        if sys.argv[1] == "pre":
+            return _pre(sys.argv[1:])
+        if sys.argv[1] == "final":
+            return _final(sys.argv[1:])
+        raise ValueError("mode must be pre or final")
+    except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        print(f"unable to collect Controller environment evidence: {exc}", file=sys.stderr)
+        return 80
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

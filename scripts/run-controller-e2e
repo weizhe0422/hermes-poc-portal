@@ -1,0 +1,516 @@
+#!/bin/sh
+set -eu
+
+mode=run
+keep=false
+for argument in "$@"; do
+  case "$argument" in
+    --build-only) mode=build ;;
+    --keep) keep=true ;;
+    *) echo "usage: scripts/run-controller-e2e [--build-only] [--keep]" >&2; exit 70 ;;
+  esac
+done
+
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=$(dirname "$script_dir")
+cd "$repo_root"
+
+branch=$(git branch --show-current)
+if [ "$branch" != "test/t-m0-m1" ]; then
+  echo "refusing to run from branch $branch; expected test/t-m0-m1" >&2
+  exit 70
+fi
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  echo "source tree must be clean before an E2E run" >&2
+  exit 70
+fi
+if ! docker info >/dev/null 2>&1; then
+  echo "Docker daemon is unavailable" >&2
+  exit 70
+fi
+
+contract_tag=${CONTRACT_TAG:-contract-m0-m1-v0.2.1}
+contract_version=${CONTRACT_VERSION:-0.2.1}
+if [ "$contract_tag" != contract-m0-m1-v0.2.1 ] || [ "$contract_version" != 0.2.1 ]; then
+  echo "T-M0/T-M1 must use Frozen Contract v0.2.1" >&2
+  exit 70
+fi
+contract_commit=$(git rev-parse "$contract_tag^{commit}" 2>/dev/null || true)
+case "$contract_commit" in
+  [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+  *) echo "Frozen Contract tag is unavailable" >&2; exit 70 ;;
+esac
+if [ "${#contract_commit}" -ne 40 ]; then
+  echo "Frozen Contract tag does not resolve to a full commit" >&2
+  exit 70
+fi
+if ! git diff --exit-code "$contract_tag" -- \
+  hermes-poc-specification-v0.1/contracts \
+  hermes-poc-specification-v0.1/test-cases/infrastructure/cases.yaml \
+  hermes-poc-specification-v0.1/test-cases/runtime/cases.yaml >/dev/null; then
+  echo "Frozen Contract or Expected Result differs from $contract_tag" >&2
+  exit 70
+fi
+export CONTRACT_TAG="$contract_tag"
+export CONTRACT_VERSION="$contract_version"
+export CONTRACT_COMMIT="$contract_commit"
+
+run_id=${RUN_ID:-"$(date -u +%Y%m%dt%H%M%Sz)-$$"}
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])
+    echo "RUN_ID must be one lowercase Compose-safe segment" >&2; exit 70 ;;
+esac
+if [ "${#run_id}" -gt 63 ]; then
+  echo "RUN_ID must be at most 63 characters" >&2
+  exit 70
+fi
+
+results_root=${TEST_RESULTS_ROOT:-"$repo_root/test-results"}
+run_results="$results_root/$run_id"
+if [ -e "$run_results" ]; then
+  echo "refusing to reuse existing run directory: $run_results" >&2
+  exit 70
+fi
+controller_results="$run_results/controller-e2e"
+bootstrap_dir="$run_results/bootstrap"
+mkdir -p \
+  "$controller_results/docker-snapshots" \
+  "$controller_results/logs" \
+  "$controller_results/infrastructure" \
+  "$run_results/junit" \
+  "$bootstrap_dir"
+chmod 0777 "$controller_results"
+
+export RUN_ID="$run_id"
+export TEST_RESULTS_ROOT="$results_root"
+export TEST_RUN_RESULTS_DIR="$run_results"
+export CONTROLLER_IMAGE=${CONTROLLER_IMAGE:-hermes-poc-controller:0.1.0}
+export CONTROLLER_E2E_IMAGE=${CONTROLLER_E2E_IMAGE:-hermes-poc-controller-e2e:0.1.0}
+export HERMES_FIXTURE_IMAGE=${HERMES_FIXTURE_IMAGE:-hermes-poc-hermes-fixture:0.1.0}
+export DOCKER_ENGINE_TEST_IMAGE=${DOCKER_ENGINE_TEST_IMAGE:-docker:28.0.1-dind-rootless}
+export TRACE_REDACT_VALUES=TEST_SECRET_123456
+
+runtime_instance_id=hermes-fixture-001
+persistent_instance_id=hermes-fixture-persistent
+slow_instance_id=hermes-fixture-slow
+unmanaged_instance_id=unmanaged-fixture-001
+secret_instance_id=hermes-fixture-secret
+controller_ready_timeout_seconds=${CONTROLLER_READY_TIMEOUT_SECONDS:-60}
+compose="docker compose -f $repo_root/compose.e2e.controller.yaml"
+artifact_initialized=false
+
+emergency_cleanup() {
+  failure_status=$?
+  trap - EXIT INT TERM
+  if [ "$artifact_initialized" = true ]; then
+    $compose exec -T docker-engine-test /bin/sh /bootstrap/cleanup-controller-e2e-engine \
+      "$run_id" > "$controller_results/docker-snapshots/cleanup.json" \
+      2> "$controller_results/logs/cleanup.log" || \
+      printf '{"run_id":"%s","cleanup_verified":false}\n' "$run_id" \
+        > "$controller_results/docker-snapshots/cleanup.json"
+    $compose down --volumes --remove-orphans \
+      > "$controller_results/logs/compose-down.log" 2>&1 || true
+    printf '{"run_id":"%s","compose_down_verified":false}\n' "$run_id" \
+      > "$controller_results/docker-snapshots/outer-cleanup.json"
+    printf '{"orchestration_completed":false,"runner_passed":false,"exit_code":%s}\n' \
+      "$failure_status" > "$controller_results/runner-status.json"
+    python3 "$repo_root/scripts/collect-test-results" "$run_id" >/dev/null 2>&1 || true
+  else
+    $compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+  fi
+  exit "$failure_status"
+}
+trap emergency_cleanup EXIT
+trap 'exit 70' INT TERM
+
+echo "building Controller E2E runner and preparing synthetic Hermes fixture"
+prebuilt_fixture_id=${HERMES_FIXTURE_PREBUILT_ID:-}
+if [ -n "$prebuilt_fixture_id" ]; then
+  case "$prebuilt_fixture_id" in
+    sha256:*) prebuilt_fixture_digest=${prebuilt_fixture_id#sha256:} ;;
+    *) echo "HERMES_FIXTURE_PREBUILT_ID must be an immutable sha256 image ID" >&2; exit 70 ;;
+  esac
+  case "$prebuilt_fixture_digest" in
+    ''|*[!0-9a-f]*)
+      echo "HERMES_FIXTURE_PREBUILT_ID must be an immutable sha256 image ID" >&2
+      exit 70 ;;
+  esac
+  if [ "${#prebuilt_fixture_digest}" -ne 64 ]; then
+    echo "HERMES_FIXTURE_PREBUILT_ID must be an immutable sha256 image ID" >&2
+    exit 70
+  fi
+  actual_fixture_id=$(docker image inspect --format '{{.Id}}' \
+    "$HERMES_FIXTURE_IMAGE" 2>/dev/null || true)
+  if [ "$actual_fixture_id" != "$prebuilt_fixture_id" ]; then
+    echo "prebuilt Hermes fixture tag does not match its immutable image ID" >&2
+    exit 70
+  fi
+  echo "reusing synthetic Hermes fixture $prebuilt_fixture_id"
+elif ! docker build \
+    --file tests/hermes-fixture/Dockerfile \
+    --tag "$HERMES_FIXTURE_IMAGE" \
+    --build-arg "PYTHON_IMAGE=${TEST_PYTHON_IMAGE:-python:3.13.5-slim-bookworm}" \
+    --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple}" \
+    tests/hermes-fixture; then
+  exit 10
+fi
+if ! $compose build controller-e2e-runner; then
+  exit 10
+fi
+if [ "$mode" = build ]; then
+  trap - EXIT INT TERM
+  rmdir "$bootstrap_dir" 2>/dev/null || true
+  rmdir "$run_results/junit" "$controller_results/infrastructure" \
+    "$controller_results/docker-snapshots" "$controller_results/logs" \
+    "$controller_results" "$run_results" 2>/dev/null || true
+  echo "test images built successfully"
+  exit 0
+fi
+
+platform_commit=${PLATFORM_COMMIT:-}
+case "$platform_commit" in
+  ''|*[!0-9a-f]*) echo "PLATFORM_COMMIT must be a lowercase full candidate commit" >&2; exit 70 ;;
+esac
+if [ "${#platform_commit}" -ne 40 ] \
+  || ! git cat-file -e "$platform_commit^{commit}" 2>/dev/null; then
+  echo "PLATFORM_COMMIT is not an available 40-character candidate commit" >&2
+  exit 70
+fi
+if ! docker image inspect "$CONTROLLER_IMAGE" >/dev/null 2>&1; then
+  echo "Controller image is unavailable: $CONTROLLER_IMAGE" >&2
+  exit 70
+fi
+controller_revision=$(docker image inspect --format \
+  '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CONTROLLER_IMAGE")
+if [ "$controller_revision" != "$platform_commit" ]; then
+  echo "Controller image revision does not match PLATFORM_COMMIT" >&2
+  exit 70
+fi
+if ! docker image inspect "$DOCKER_ENGINE_TEST_IMAGE" >/dev/null 2>&1; then
+  docker pull "$DOCKER_ENGINE_TEST_IMAGE"
+fi
+
+controller_image_id=$(docker image inspect --format '{{.Id}}' "$CONTROLLER_IMAGE")
+controller_e2e_image_id=$(docker image inspect --format '{{.Id}}' "$CONTROLLER_E2E_IMAGE")
+fixture_image_id=$(docker image inspect --format '{{.Id}}' "$HERMES_FIXTURE_IMAGE")
+docker_engine_test_image_id=$(docker image inspect --format '{{.Id}}' "$DOCKER_ENGINE_TEST_IMAGE")
+
+cat > "$run_results/manifest.yaml" <<EOF
+{
+  "run_id": "$run_id",
+  "fixture_type": "SYNTHETIC",
+  "spec_version": "0.1.0",
+  "contract_tag": "$contract_tag",
+  "contract_commit": "$contract_commit",
+  "contract_version": "$contract_version",
+  "git_commit": "$(git rev-parse HEAD)",
+  "git_branch": "$branch",
+  "platform_commit": "$platform_commit",
+  "test_suite": "controller-e2e",
+  "images": {
+    "controller": "$CONTROLLER_IMAGE",
+    "controller_e2e": "$CONTROLLER_E2E_IMAGE",
+    "hermes_fixture": "$HERMES_FIXTURE_IMAGE",
+    "docker_engine_test": "$DOCKER_ENGINE_TEST_IMAGE"
+  },
+  "image_ids": {
+    "controller": "$controller_image_id",
+    "controller_e2e": "$controller_e2e_image_id",
+    "hermes_fixture": "$fixture_image_id",
+    "docker_engine_test": "$docker_engine_test_image_id"
+  },
+  "executed_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+}
+EOF
+artifact_initialized=true
+
+fixture_tar="$bootstrap_dir/hermes-fixture.tar"
+docker save --output "$fixture_tar" "$HERMES_FIXTURE_IMAGE"
+
+echo "starting isolated Docker Engine"
+$compose up --detach docker-engine-test
+attempt=0
+until $compose exec -T docker-engine-test docker info >/dev/null 2>&1; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 60 ]; then
+    echo "isolated Docker Engine did not become ready" >&2
+    exit 70
+  fi
+  sleep 1
+done
+$compose cp "$fixture_tar" docker-engine-test:/tmp/hermes-fixture.tar
+$compose exec -T --user root docker-engine-test chmod 0644 /tmp/hermes-fixture.tar
+$compose exec -T docker-engine-test docker load --input /tmp/hermes-fixture.tar >/dev/null
+$compose exec -T docker-engine-test /bin/sh /bootstrap/bootstrap-controller-e2e-engine \
+  "$run_id" "$HERMES_FIXTURE_IMAGE" \
+  "$runtime_instance_id" "$persistent_instance_id" "$slow_instance_id" \
+  "$unmanaged_instance_id" "$secret_instance_id"
+rm -f "$fixture_tar"
+rmdir "$bootstrap_dir" 2>/dev/null || true
+
+runner_status=0
+evidence_status=0
+environment_pre_collected=false
+phase_status_file="$controller_results/phase-status.jsonl"
+: > "$phase_status_file"
+
+prepare_fixture() {
+  action=$1
+  instance_id=$2
+  export E2E_SETUP_BLOCKER=
+  if $compose exec -T docker-engine-test \
+    /bin/sh /bootstrap/prepare-controller-e2e-engine \
+    "$run_id" "$HERMES_FIXTURE_IMAGE" "$action" "$instance_id" \
+    >> "$controller_results/logs/fixture-preparation.log" 2>&1; then
+    return 0
+  fi
+  export E2E_SETUP_BLOCKER=fixture-preparation-failed
+  evidence_status=1
+  printf '%s\n' \
+    "fixture preparation failed for $instance_id before $action" \
+    >> "$controller_results/logs/fixture-preparation.log"
+  return 0
+}
+
+run_phase() {
+  phase=$1
+  case_id=$2
+  phase_instance_id=$3
+  fixture_port=$4
+  selection=$5
+  start_timeout=$6
+  engine_required=$7
+
+  export CONTROLLER_E2E_PHASE="$phase"
+  export RUNTIME_INSTANCE_ID="$phase_instance_id"
+  export HERMES_FIXTURE_PORT="$fixture_port"
+  export HERMES_START_TIMEOUT_SECONDS="$start_timeout"
+  export HERMES_STOP_TIMEOUT_SECONDS=15
+  export CONTROLLER_READY_TIMEOUT_SECONDS="$controller_ready_timeout_seconds"
+  phase_dir="$controller_results/$phase"
+  mkdir -p "$phase_dir"
+
+  # Move past setup events before opening a case-specific Engine window.
+  sleep 1
+  events_since=$($compose exec -T docker-engine-test date +%s | tr -d '\r')
+  baseline_id=$($compose exec -T docker-engine-test docker inspect \
+    --format '{{.Id}}' "$phase_instance_id" 2>/dev/null | tr -d '\r' || true)
+  if [ -z "$baseline_id" ]; then
+    baseline_id=missing
+    export E2E_SETUP_BLOCKER=fixture-inspection-failed
+    evidence_status=1
+  fi
+
+  if ! $compose up --detach --force-recreate controller-under-test; then
+    export E2E_SETUP_BLOCKER=controller-start-failed
+    export CONTROLLER_READY_TIMEOUT_SECONDS=2
+    evidence_status=1
+  fi
+
+  runner_name="hermes-${run_id}-${phase}-runner"
+  docker rm -f "$runner_name" >/dev/null 2>&1 || true
+  set +e
+  $compose run --name "$runner_name" --no-deps controller-e2e-runner -k "$selection"
+  phase_status=$?
+  set -e
+
+  if ! docker cp \
+    "$runner_name:/test-results/$run_id/controller-e2e/$phase/." \
+    "$phase_dir/"; then
+    phase_status=80
+    evidence_status=1
+  fi
+
+  if [ "$environment_pre_collected" = false ]; then
+    controller_id=$($compose ps -q controller-under-test)
+    engine_id=$($compose ps -q docker-engine-test)
+    if python3 "$repo_root/scripts/collect-controller-environment-evidence" pre \
+      "$run_id" "$runner_name" "$controller_id" "$engine_id" \
+      "$controller_results/docker-snapshots/controller-environment-pre.json"; then
+      environment_pre_collected=true
+    else
+      evidence_status=1
+    fi
+  fi
+
+  if ! $compose logs --no-color controller-under-test \
+    | sed 's/TEST_SECRET_123456/[REDACTED]/g' \
+    > "$controller_results/logs/controller-$phase.log"; then
+    evidence_status=1
+  fi
+  winning_action=
+  if [ "$case_id" = RUNTIME-008 ]; then
+    context_file="$phase_dir/engine-context.json"
+    winning_action=$(python3 - "$context_file" <<'PY' || true
+import json
+from pathlib import Path
+import sys
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    value = {}
+action = value.get("winning_action")
+if value.get("test_case_id") == "RUNTIME-008":
+    observation = value.get("engine_observation", action)
+    if observation in {"START", "STOP", "MULTIPLE", "NONE", "UNRESOLVED"}:
+        print(observation)
+PY
+)
+    if [ "$winning_action" = START ]; then
+      attempt=0
+      until [ "$($compose exec -T docker-engine-test docker inspect \
+        --format '{{.State.Running}}' "$phase_instance_id" 2>/dev/null \
+        | tr -d '\r')" = true ]; do
+        attempt=$((attempt + 1))
+        if [ "$attempt" -ge 200 ]; then
+          evidence_status=1
+          break
+        fi
+        sleep 0.1
+      done
+    elif [ "$winning_action" != STOP ] \
+      && [ "$winning_action" != MULTIPLE ] \
+      && [ "$winning_action" != NONE ] \
+      && [ "$winning_action" != UNRESOLVED ]; then
+      evidence_status=1
+    fi
+  fi
+  if ! $compose stop controller-under-test >/dev/null 2>&1; then
+    evidence_status=1
+  fi
+  docker rm "$runner_name" >/dev/null 2>&1 || evidence_status=1
+
+  engine_exit=0
+  if [ "$engine_required" = true ]; then
+    evidence_file="$controller_results/docker-snapshots/evidence-$case_id.json"
+    events_file="$controller_results/docker-snapshots/events-$case_id.jsonl"
+    $compose exec -T docker-engine-test /bin/sh /bootstrap/verify-controller-e2e-engine \
+      "$case_id" "$run_id" "$phase_instance_id" "$events_since" \
+      "$baseline_id" "$HERMES_FIXTURE_IMAGE" "$winning_action" \
+      > "$evidence_file" 2> "$events_file" || engine_exit=$?
+    if [ -f "$phase_dir/junit.xml" ]; then
+      python3 "$repo_root/scripts/apply-controller-engine-evidence" \
+        "$evidence_file" "$phase_dir/junit.xml" || evidence_status=1
+    else
+      evidence_status=1
+    fi
+  fi
+
+  printf '%s\n' \
+    "{\"phase\":\"$phase\",\"test_case_id\":\"$case_id\",\"runner_exit_code\":$phase_status,\"engine_exit_code\":$engine_exit}" \
+    >> "$phase_status_file"
+  if [ "$phase_status" -ne 0 ] || [ "$engine_exit" -ne 0 ]; then
+    runner_status=1
+  fi
+}
+
+prepare_fixture stop "$runtime_instance_id"
+run_phase runtime-001 RUNTIME-001 "$runtime_instance_id" 8000 runtime_001 15 false
+
+prepare_fixture stop "$runtime_instance_id"
+run_phase runtime-003 RUNTIME-003 "$runtime_instance_id" 8000 runtime_003 15 true
+prepare_fixture start-ready "$runtime_instance_id"
+run_phase runtime-006 RUNTIME-006 "$runtime_instance_id" 8000 runtime_006 15 true
+prepare_fixture start-ready "$runtime_instance_id"
+run_phase runtime-005 RUNTIME-005 "$runtime_instance_id" 8000 runtime_005 15 true
+prepare_fixture start-ready "$runtime_instance_id"
+run_phase runtime-004 RUNTIME-004 "$runtime_instance_id" 8000 runtime_004 15 true
+prepare_fixture stop "$runtime_instance_id"
+run_phase runtime-007 RUNTIME-007 "$runtime_instance_id" 8000 runtime_007 15 true
+
+prepare_fixture stop "$slow_instance_id"
+run_phase runtime-008 RUNTIME-008 "$slow_instance_id" 8002 runtime_008 15 true
+prepare_fixture stop "$slow_instance_id"
+run_phase runtime-009 RUNTIME-009 "$slow_instance_id" 8002 runtime_009 1 true
+
+prepare_fixture start-ready "$unmanaged_instance_id"
+run_phase runtime-012 RUNTIME-012 "$unmanaged_instance_id" 8003 runtime_012 15 true
+prepare_fixture start-ready "$secret_instance_id"
+run_phase runtime-013 RUNTIME-013 "$secret_instance_id" 8004 runtime_013 15 true
+prepare_fixture start-ready "$persistent_instance_id"
+run_phase runtime-014 RUNTIME-014 "$persistent_instance_id" 8001 runtime_014 15 true
+
+prepare_fixture recreate-core-slow "$runtime_instance_id"
+run_phase runtime-017 RUNTIME-017 "$runtime_instance_id" 8000 runtime_017 15 true
+
+if ! $compose logs --no-color docker-engine-test \
+  | sed 's/TEST_SECRET_123456/[REDACTED]/g' \
+  > "$controller_results/logs/docker-engine-test.log"; then
+  evidence_status=1
+fi
+if ! $compose exec -T docker-engine-test /bin/sh /bootstrap/collect-controller-e2e-engine \
+  "$run_id" "$persistent_instance_id" \
+  > "$controller_results/docker-snapshots/containers.jsonl" \
+  2> "$controller_results/docker-snapshots/persistence.json"; then
+  evidence_status=1
+fi
+
+inner_cleanup_verified=false
+compose_down_verified=false
+if [ "$keep" = true ]; then
+  printf '{"run_id":"%s","cleanup_verified":false,"reason":"--keep"}\n' "$run_id" \
+    > "$controller_results/docker-snapshots/cleanup.json"
+  printf '{"run_id":"%s","compose_down_verified":false,"reason":"--keep"}\n' "$run_id" \
+    > "$controller_results/docker-snapshots/outer-cleanup.json"
+else
+  if $compose exec -T docker-engine-test /bin/sh /bootstrap/cleanup-controller-e2e-engine \
+    "$run_id" > "$controller_results/docker-snapshots/cleanup.json" \
+    2> "$controller_results/logs/cleanup.log"; then
+    inner_cleanup_verified=true
+  else
+    evidence_status=1
+    printf '{"run_id":"%s","cleanup_verified":false}\n' "$run_id" \
+      > "$controller_results/docker-snapshots/cleanup.json"
+  fi
+  if $compose down --volumes --remove-orphans \
+    > "$controller_results/logs/compose-down.log" 2>&1; then
+    compose_down_verified=true
+    printf '{"run_id":"%s","compose_down_verified":true}\n' "$run_id" \
+      > "$controller_results/docker-snapshots/outer-cleanup.json"
+  else
+    evidence_status=1
+    printf '{"run_id":"%s","compose_down_verified":false}\n' "$run_id" \
+      > "$controller_results/docker-snapshots/outer-cleanup.json"
+  fi
+fi
+trap - EXIT INT TERM
+
+controller_environment_file="$controller_results/docker-snapshots/controller-environment.json"
+if ! python3 "$repo_root/scripts/collect-controller-environment-evidence" final \
+  "$controller_results/docker-snapshots/controller-environment-pre.json" \
+  "$controller_results/docker-snapshots/cleanup.json" \
+  "$controller_results/docker-snapshots/outer-cleanup.json" \
+  "$controller_environment_file"; then
+  evidence_status=1
+fi
+if ! python3 "$repo_root/scripts/finalize-infrastructure-evidence" controller \
+  "$controller_environment_file" \
+  "$controller_results/infrastructure/junit.xml"; then
+  evidence_status=1
+fi
+
+source_tree_unchanged=true
+if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+  source_tree_unchanged=false
+  evidence_status=1
+fi
+runner_passed=true
+if [ "$runner_status" -ne 0 ]; then runner_passed=false; fi
+evidence_collection_verified=true
+if [ "$evidence_status" -ne 0 ]; then evidence_collection_verified=false; fi
+printf '%s\n' \
+  "{\"orchestration_completed\":true,\"runner_passed\":$runner_passed,\"evidence_collection_verified\":$evidence_collection_verified,\"cleanup_verified\":$inner_cleanup_verified,\"compose_down_verified\":$compose_down_verified,\"source_tree_unchanged\":$source_tree_unchanged,\"phase_status_file\":\"phase-status.jsonl\"}" \
+  > "$controller_results/runner-status.json"
+
+artifact_status=0
+python3 "$repo_root/scripts/collect-test-results" "$run_id" || artifact_status=$?
+if [ "$runner_status" -ne 0 ]; then
+  echo "Controller Runtime acceptance failed; artifacts: $run_results" >&2
+  exit 30
+fi
+if [ "$evidence_status" -ne 0 ] || [ "$artifact_status" -ne 0 ]; then
+  echo "Controller evidence or artifact validation failed; artifacts: $run_results" >&2
+  exit 80
+fi
+echo "Controller Runtime acceptance passed; artifacts: $run_results"

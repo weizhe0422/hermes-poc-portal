@@ -1,0 +1,223 @@
+# Test-owned implementation map. This file does not define or change Expected Results.
+schema_version: 0.2.0
+spec_version: 0.1.0
+scope: [T-M0, T-M1]
+
+frozen_contract:
+  tag: contract-m0-m1-v0.2.1
+  commit: febdea906a51bab59e582755c495ed2253fb64b8
+  version: 0.2.1
+  status: FROZEN
+  expected_sources:
+    - hermes-poc-specification-v0.1/contracts/openapi/controller-api.yaml
+    - hermes-poc-specification-v0.1/contracts/state-machines/hermes-runtime.yaml
+    - hermes-poc-specification-v0.1/contracts/schemas
+    - hermes-poc-specification-v0.1/contracts/errors/error-catalog.yaml
+    - hermes-poc-specification-v0.1/test-cases/infrastructure/cases.yaml
+    - hermes-poc-specification-v0.1/test-cases/runtime/cases.yaml
+  precedence_note: Frozen contracts/versions.yaml is authoritative where the legacy work packet still assigns RUNTIME-008, RUNTIME-009, RUNTIME-012, or RUNTIME-013 to T-M2.
+
+acceptance_inventory:
+  total_cases: 31
+  executed_frozen_cases: 21
+  deferred_by_milestone: 10
+  not_evaluated: 0
+  suites:
+    portal_infrastructure:
+      count: 8
+      implementation: tests/portal-e2e plus external orchestrator evidence
+      case_ids: [SECURITY-001, SECURITY-002, SECURITY-003, EXECUTION-001, EXECUTION-002, EXECUTION-003, EXECUTION-004, ARTIFACT-001]
+    controller_environment:
+      count: 1
+      implementation: compose.e2e.controller.yaml plus external isolated-engine evidence
+      case_ids: [CONTROLLER-ENV-001]
+    controller_runtime:
+      count: 12
+      implementation: tests/controller-e2e plus external isolated-engine evidence
+      case_ids: [RUNTIME-001, RUNTIME-003, RUNTIME-004, RUNTIME-005, RUNTIME-006, RUNTIME-007, RUNTIME-008, RUNTIME-009, RUNTIME-012, RUNTIME-013, RUNTIME-014, RUNTIME-017]
+    deferred_t_m4:
+      count: 10
+      classification: DEFERRED_BY_MILESTONE
+      execution_status: SKIPPED
+      acceptance_note: Deferred rows are neither PASS, FAIL, nor NOT_EVALUATED.
+      case_ids: [CW-001, CW-002, CW-003, CW-004, CW-005, DEPLOY-001, DEPLOY-002, DEPLOY-003, DEPLOY-004, DEPLOY-005]
+
+executed_case_map:
+  - test_case_id: SECURITY-001
+    requirement_ids: [BLD-07]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: host-network
+    implementation: Portal external orchestrator host/container inspection
+  - test_case_id: SECURITY-002
+    requirement_ids: [E2E-01, E2E-02]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: network-isolation
+    implementation: Portal Runner probes plus external container inspection
+  - test_case_id: SECURITY-003
+    requirement_ids: [E2E-02]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: runner-isolation
+    implementation: Portal Runner mount/filesystem probes plus external container inspection
+  - test_case_id: EXECUTION-001
+    requirement_ids: [E2E-05]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: execution-probe
+    implementation: deterministic failing nested Playwright process and exit-code observation
+  - test_case_id: EXECUTION-002
+    requirement_ids: [E2E-06]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: execution-probe
+    implementation: deterministic failure JUnit, trace, log, Run ID, and Case ID inspection
+  - test_case_id: EXECUTION-003
+    requirement_ids: [E2E-07]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: execution-probe
+    implementation: one-attempt Critical failure with no automatic retry
+  - test_case_id: EXECUTION-004
+    requirement_ids: [E2E-08]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: runner-isolation
+    implementation: external orchestration, Git/source isolation, and clean-tree comparison
+  - test_case_id: ARTIFACT-001
+    requirement_ids: [BLD-08]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: artifact
+    implementation: independent named volume, post-exit copy/read, required artifact and synthetic-secret scan
+  - test_case_id: CONTROLLER-ENV-001
+    requirement_ids: [E2E-03, E2E-04]
+    source: test-cases/infrastructure/cases.yaml
+    evidence_kind: controller-isolation
+    implementation: external Runner, isolated rootless Docker-in-Docker, no Host socket, run-scoped cleanup
+  - test_case_id: RUNTIME-001
+    requirement_ids: [RT-01, RT-02]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller OpenAPI response, AgentInstance schema, and Runtime Expected
+  - test_case_id: RUNTIME-003
+    requirement_ids: [RT-03, RT-09]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller OpenAPI, state path, health fields, and isolated Engine start evidence
+  - test_case_id: RUNTIME-004
+    requirement_ids: [RT-04]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller OpenAPI, state path, and isolated Engine container/volume evidence
+  - test_case_id: RUNTIME-005
+    requirement_ids: [RT-05]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller OpenAPI, state path, and isolated Engine restart/identity evidence
+  - test_case_id: RUNTIME-006
+    requirement_ids: [RT-06]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller OpenAPI no-op response and isolated Engine duplicate-container gate
+  - test_case_id: RUNTIME-007
+    requirement_ids: [RT-06]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller OpenAPI no-op response and isolated Engine duplicate-stop gate
+  - test_case_id: RUNTIME-008
+    requirement_ids: [RT-07]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: synchronized parallel OpenAPI requests and isolated Engine event evidence
+    known_flakiness: Frozen Expected does not define whether Start or Stop wins; the scheduler outcome is reported once with NO_RETRY.
+  - test_case_id: RUNTIME-009
+    requirement_ids: [RT-08]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: short-timeout slow fixture, bounded ERROR-state observation, direct AgentInstance.last_error_code validation, and isolated Engine evidence
+  - test_case_id: RUNTIME-012
+    requirement_ids: [RT-10, RT-11]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller OpenAPI denial plus isolated Engine unmanaged-container preservation
+  - test_case_id: RUNTIME-013
+    requirement_ids: [RT-13, NF-03]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller logs API, response redaction, and repository-wide synthetic-secret artifact scan
+  - test_case_id: RUNTIME-014
+    requirement_ids: [RT-05]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: Controller Restart plus isolated Engine container/volume marker preservation
+  - test_case_id: RUNTIME-017
+    requirement_ids: [RT-06]
+    source: test-cases/runtime/cases.yaml
+    evidence_kind: black-box
+    implementation: concurrent Controller Restart response identity plus isolated Engine no-duplicate gate
+
+deferred_case_map:
+  - test_case_id: CW-001
+    requirement_ids: [KW-01, KW-02, KW-06, AG-07]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: CW-002
+    requirement_ids: [KW-03, KW-06]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: CW-003
+    requirement_ids: [KW-04]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: CW-004
+    requirement_ids: [KW-05]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: CW-005
+    requirement_ids: [KW-02, NF-01]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: DEPLOY-001
+    requirement_ids: [DP-01, DP-03, DP-04, DP-05, DP-07]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: DEPLOY-002
+    requirement_ids: [DP-02, DP-04]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: DEPLOY-003
+    requirement_ids: [DP-02, DP-04]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: DEPLOY-004
+    requirement_ids: [DP-06]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+  - test_case_id: DEPLOY-005
+    requirement_ids: [DP-06]
+    milestone: T-M4
+    classification: DEFERRED_BY_MILESTONE
+
+requirement_acceptance_claim:
+  level: FROZEN_CASE_LEVEL
+  note: A passed row accepts only the Frozen YAML Case slice; it does not imply full cross-component or future-milestone Requirement completion.
+
+coverage_gaps:
+  - classification: COVERAGE_GAP
+    test_case_ids: [RUNTIME-002, RUNTIME-010, RUNTIME-011, RUNTIME-015, RUNTIME-016]
+    detail: These Matrix-referenced Runtime IDs are outside the Frozen 21-case list and have no YAML Expected in the Bundle; no assertion is inferred.
+  - classification: COVERAGE_GAP
+    test_case_ids: [BUILD-001, BUILD-002, BUILD-003, BUILD-004, BUILD-005, BUILD-006]
+    requirement_ids: [BLD-01, BLD-02, BLD-03, BLD-04, BLD-05, BLD-06]
+    detail: Matrix-only platform/image cases are outside the Frozen 21-case list; Runner image build does not claim production-image acceptance.
+  - classification: COVERAGE_GAP
+    requirement_ids: [RT-01, RT-03, RT-04, RT-05]
+    detail: Frozen Runtime cases exercise the Controller boundary; Portal operator/display product flows remain outside this M0/M1 Contract scope.
+  - classification: COVERAGE_GAP
+    requirement_ids: [RT-09]
+    detail: AgentInstance health fields are asserted, but OD-03 does not freeze an independently observable LLM probe protocol.
+  - classification: COVERAGE_GAP
+    requirement_ids: [BLD-08, NF-03]
+    detail: Artifact scan checks text, binary bytes, and ZIP members for synthetic secrets but does not OCR screenshot or video pixels.
+  - classification: COVERAGE_GAP
+    detail: Base image/package versions support mirror overrides, but the Frozen Contract does not publish approved internal registry digests or a closed-network build environment.
+
+contract_questions:
+  - test_case_id: RUNTIME-008
+    requirement_ids: [RT-07]
+    classification: CONTRACT_AMBIGUITY
+    detail: Frozen Expected requires one accepted operation and one conflict but does not define whether concurrent Start or Stop must win.

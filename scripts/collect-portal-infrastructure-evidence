@@ -1,0 +1,313 @@
+#!/usr/bin/env python3
+"""Collect host-visible evidence for Frozen Portal infrastructure cases."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+from typing import Any
+
+
+def _docker_json(*arguments: str) -> Any:
+    result = subprocess.run(
+        ["docker", *arguments],
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def _inspect(container_id: str) -> dict[str, Any]:
+    documents = _docker_json("inspect", container_id)
+    if not isinstance(documents, list) or len(documents) != 1:
+        raise ValueError(f"docker inspect returned no unique object for {container_id}")
+    return documents[0]
+
+
+def _logical_networks(container: dict[str, Any]) -> list[str]:
+    actual = container.get("NetworkSettings", {}).get("Networks", {})
+    logical: list[str] = []
+    for network_name in actual:
+        network = _docker_json("network", "inspect", network_name)[0]
+        labels = network.get("Labels") or {}
+        logical.append(labels.get("com.docker.compose.network", network_name))
+    return sorted(logical)
+
+
+def _published_host_ports(container: dict[str, Any]) -> list[int]:
+    bindings = container.get("NetworkSettings", {}).get("Ports", {}) or {}
+    ports: set[int] = set()
+    for records in bindings.values():
+        for record in records or []:
+            raw = record.get("HostPort")
+            if isinstance(raw, str) and raw.isdigit():
+                ports.add(int(raw))
+    return sorted(ports)
+
+
+def _is_running(container: dict[str, Any] | None) -> bool:
+    return bool(container and container.get("State", {}).get("Running") is True)
+
+
+def _contains_secret(root: Path, secret: bytes) -> list[str]:
+    findings: list[str] = []
+    for path in root.rglob("*"):
+        if path.is_symlink() or not path.is_file():
+            continue
+        try:
+            if secret in path.read_bytes():
+                findings.append(str(path.relative_to(root)))
+        except OSError:
+            findings.append(f"{path.relative_to(root)}!<unreadable>")
+    return findings
+
+
+def _gitignored_or_external(repo_root: Path, run_root: Path) -> bool:
+    try:
+        run_root.relative_to(repo_root)
+    except ValueError:
+        return True
+    result = subprocess.run(
+        ["git", "-C", str(repo_root), "check-ignore", "--quiet", str(run_root)],
+        check=False,
+    )
+    return result.returncode == 0
+
+
+def main() -> int:
+    if len(sys.argv) != 6:
+        print(
+            "usage: scripts/collect-portal-infrastructure-evidence "
+            "<portal-container> <runner-container> <run-root> <repo-root> <output>",
+            file=sys.stderr,
+        )
+        return 80
+    portal_id, runner_id = sys.argv[1], sys.argv[2]
+    run_root = Path(sys.argv[3]).resolve()
+    repo_root = Path(sys.argv[4]).resolve()
+    output = Path(sys.argv[5]).resolve()
+    try:
+        portal = _inspect(portal_id)
+        runner = _inspect(runner_id)
+        observations_path = run_root / "portal-e2e" / "runner-observations.json"
+        observations = json.loads(observations_path.read_text(encoding="utf-8"))
+        if (
+            observations.get("schema_version") != "1.0.0"
+            or observations.get("contract_version") != "0.2.1"
+            or observations.get("expected_suite_id") != "infrastructure-v0.2"
+            or observations.get("run_id") != run_root.name
+            or not isinstance(observations.get("cases"), dict)
+        ):
+            raise ValueError("runner-observations.json provenance is invalid")
+
+        def runner_observation(case_id: str) -> dict[str, Any]:
+            record = observations["cases"].get(case_id)
+            if not isinstance(record, dict) or not isinstance(
+                record.get("observed"), dict
+            ):
+                raise ValueError(f"runner observation is missing for {case_id}")
+            if record.get("mismatches") != []:
+                raise ValueError(f"runner observation has mismatches for {case_id}")
+            return record
+        project = (portal.get("Config", {}).get("Labels") or {}).get(
+            "com.docker.compose.project"
+        )
+        project_ids: list[str] = []
+        if project:
+            result = subprocess.run(
+                [
+                    "docker",
+                    "ps",
+                    "-aq",
+                    "--filter",
+                    f"label=com.docker.compose.project={project}",
+                ],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+            project_ids = [item for item in result.stdout.splitlines() if item]
+        services: dict[str, dict[str, Any]] = {}
+        for container_id in project_ids:
+            document = _inspect(container_id)
+            labels = document.get("Config", {}).get("Labels") or {}
+            service = labels.get("com.docker.compose.service", container_id)
+            services[service] = document
+
+        controller = services.get("controller-under-test")
+        hermes = services.get("hermes-under-test")
+        portal_running = _is_running(portal)
+        controller_running = _is_running(controller)
+        hermes_running = _is_running(hermes)
+        portal_ports = _published_host_ports(portal)
+        project_host_ports = sorted(
+            {
+                port
+                for document in services.values()
+                for port in _published_host_ports(document)
+            }
+        )
+        controller_published = bool(
+            controller and _published_host_ports(controller)
+        )
+        hermes_published = bool(hermes and _published_host_ports(hermes))
+        security_001 = {
+            "portal_running": portal_running,
+            "controller_running": controller_running,
+            "hermes_running": hermes_running,
+            "host_ports_published": project_host_ports,
+            "portal_host_ports": portal_ports,
+            "controller_published": bool(controller_published),
+            "hermes_published": bool(hermes_published),
+        }
+        security_001["verdict"] = (
+            portal_running
+            and controller_running
+            and hermes_running
+            and project_host_ports == [8080]
+            and portal_ports == [8080]
+            and not controller_published
+            and not hermes_published
+        )
+
+        runner_networks = _logical_networks(runner)
+        security_002 = {
+            "is_independent_container": runner.get("Id") != portal.get("Id"),
+            "networks": runner_networks,
+            **runner_observation("SECURITY-002")["observed"],
+        }
+        security_002["verdict"] = (
+            security_002["is_independent_container"]
+            and runner_networks == ["e2e-network"]
+            and security_002.get("can_connect_portal") is True
+            and security_002.get("can_connect_controller") is False
+            and security_002.get("can_connect_hermes") is False
+        )
+
+        mounts = runner.get("Mounts") or []
+        mount_records = [
+            {
+                "type": mount.get("Type"),
+                "source": mount.get("Source"),
+                "destination": mount.get("Destination"),
+                "rw": mount.get("RW"),
+            }
+            for mount in mounts
+        ]
+        destinations = [str(item.get("destination") or "") for item in mount_records]
+        sources = [str(item.get("source") or "") for item in mount_records]
+        forbidden_fragments = (
+            "docker.sock",
+            "knowledge",
+            "verified-skills",
+            "hermes-state",
+            "portal-data",
+            "/.git",
+        )
+        forbidden_mount = any(
+            fragment in value
+            for value in [*destinations, *sources]
+            for fragment in forbidden_fragments
+        )
+        writable_mounts = [
+            item for item in mount_records if item.get("rw") is True
+        ]
+        only_results_writable = all(
+            item.get("destination") == "/test-results" for item in writable_mounts
+        ) and len(writable_mounts) == 1
+        security_003 = {
+            "mounts": mount_records,
+            **runner_observation("SECURITY-003")["observed"],
+        }
+        security_003["verdict"] = (
+            not forbidden_mount
+            and only_results_writable
+            and security_003.get("has_docker_socket") is False
+            and security_003.get("has_knowledge_mount") is False
+            and security_003.get("has_skill_mount") is False
+            and security_003.get("has_formal_volume") is False
+            and security_003.get("has_writable_source_mount") is False
+            and security_003.get("can_access_git_metadata") is False
+        )
+
+        git_status = subprocess.run(
+            ["git", "-C", str(repo_root), "status", "--porcelain", "--untracked-files=normal"],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        ).stdout
+        execution_004 = {
+            "git_status_unchanged": git_status == "",
+            "only_gitignore_artifacts_allowed": _gitignored_or_external(repo_root, run_root),
+            **runner_observation("EXECUTION-004")["observed"],
+        }
+        execution_004["verdict"] = (
+            execution_004["git_status_unchanged"]
+            and execution_004.get("runner_has_git_metadata") is False
+            and not execution_004["runner_has_writable_source"]
+            and execution_004["only_gitignore_artifacts_allowed"]
+        )
+
+        required = {
+            "manifest": run_root / "manifest.yaml",
+            "summary": run_root / "portal-e2e" / "summary.json",
+            "junit": run_root / "portal-e2e" / "junit" / "portal-e2e.xml",
+        }
+        trace_paths = list((run_root / "portal-e2e").rglob("*.zip"))
+        log_paths = list((run_root / "portal-e2e").rglob("*.log"))
+        secret_findings = _contains_secret(run_root, b"TEST_SECRET_123456")
+        results_mount = [
+            item
+            for item in mount_records
+            if item.get("destination") == "/test-results"
+        ]
+        artifact_001 = {
+            **runner_observation("ARTIFACT-001")["observed"],
+            "readable_after_runner_exit": runner.get("State", {}).get("Running") is False,
+            "required_files_present": {
+                name: path.is_file() and path.stat().st_size > 0
+                for name, path in required.items()
+            },
+            "trace_paths": [str(path.relative_to(run_root)) for path in trace_paths],
+            "log_paths": [str(path.relative_to(run_root)) for path in log_paths],
+            "secret_findings": secret_findings,
+        }
+        artifact_001["verdict"] = (
+            artifact_001.get("written_to_independent_volume") is True
+            and len(results_mount) == 1
+            and results_mount[0].get("type") == "volume"
+            and artifact_001["readable_after_runner_exit"]
+            and all(artifact_001["required_files_present"].values())
+            and bool(trace_paths)
+            and bool(log_paths)
+            and not secret_findings
+        )
+
+        payload = {
+            "schema_version": "0.2.0",
+            "contract_tag": "contract-m0-m1-v0.2.1",
+            "cases": {
+                "SECURITY-001": security_001,
+                "SECURITY-002": security_002,
+                "SECURITY-003": security_003,
+                "EXECUTION-004": execution_004,
+                "ARTIFACT-001": artifact_001,
+            },
+        }
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError, json.JSONDecodeError) as exc:
+        print(f"unable to collect Portal infrastructure evidence: {exc}", file=sys.stderr)
+        return 80
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

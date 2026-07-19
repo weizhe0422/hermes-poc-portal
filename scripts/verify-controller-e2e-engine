@@ -1,0 +1,279 @@
+#!/bin/sh
+set -eu
+
+test_case_id=${1:?test_case_id is required}
+run_id=${2:?run_id is required}
+target_instance_id=${3:?target instance id is required}
+events_since=${4:?Docker event baseline is required}
+baseline_id=${5:?container baseline id is required}
+fixture_image=${6:?fixture image is required}
+winning_action=${7:-}
+
+case "$test_case_id" in
+  RUNTIME-003|RUNTIME-004|RUNTIME-005|RUNTIME-006|RUNTIME-007|RUNTIME-008|RUNTIME-009|RUNTIME-012|RUNTIME-013|RUNTIME-014|RUNTIME-017) ;;
+  *) echo "unsupported Engine evidence case" >&2; exit 70 ;;
+esac
+case "$run_id" in
+  ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9]) echo "invalid run_id" >&2; exit 70 ;;
+esac
+case "$target_instance_id" in
+  ''|*[!A-Za-z0-9_.-]*) echo "invalid target instance id" >&2; exit 70 ;;
+esac
+if [ "$test_case_id" = RUNTIME-008 ]; then
+  case "$winning_action" in
+    START|STOP|MULTIPLE|NONE|UNRESOLVED) ;;
+    *) echo "RUNTIME-008 API operation observation is required" >&2; exit 70 ;;
+  esac
+fi
+case "$events_since" in
+  ''|*[!0-9]*) echo "event baseline must be a Unix timestamp" >&2; exit 70 ;;
+esac
+case "$baseline_id" in
+  ''|*[!A-Za-z0-9_.:-]*) echo "invalid baseline id" >&2; exit 70 ;;
+esac
+
+runtime_instance_id=hermes-fixture-001
+persistent_instance_id=hermes-fixture-persistent
+slow_instance_id=hermes-fixture-slow
+unmanaged_instance_id=unmanaged-fixture-001
+secret_instance_id=hermes-fixture-secret
+
+expected_names=$(printf '%s\n' \
+  "$runtime_instance_id" \
+  "$persistent_instance_id" \
+  "$slow_instance_id" \
+  "$unmanaged_instance_id" \
+  "$secret_instance_id" | LC_ALL=C sort)
+actual_names=$(docker ps -a --format '{{.Names}}' | LC_ALL=C sort)
+actual_csv=$(printf '%s\n' "$actual_names" | paste -sd, -)
+
+exact_container_set=false
+if [ "$actual_names" = "$expected_names" ]; then exact_container_set=true; fi
+
+labels_valid=true
+for instance_id in \
+  "$runtime_instance_id" \
+  "$persistent_instance_id" \
+  "$slow_instance_id" \
+  "$unmanaged_instance_id" \
+  "$secret_instance_id"; do
+  if ! docker inspect "$instance_id" >/dev/null 2>&1; then
+    labels_valid=false
+    continue
+  fi
+  labelled_run=$(docker inspect --format '{{index .Config.Labels "poc.test-run"}}' "$instance_id")
+  fixture=$(docker inspect --format '{{index .Config.Labels "poc.fixture"}}' "$instance_id")
+  managed=$(docker inspect --format '{{index .Config.Labels "poc.managed"}}' "$instance_id")
+  if [ "$labelled_run" != "$run_id" ] || [ "$fixture" != true ]; then
+    labels_valid=false
+  fi
+  if [ "$instance_id" = "$unmanaged_instance_id" ]; then
+    if [ "$managed" = true ]; then labels_valid=false; fi
+  elif [ "$managed" != true ]; then
+    labels_valid=false
+  fi
+done
+
+# Close the event window on a completed Unix second. The verifier's temporary
+# read-only volume probes happen only after this point and therefore cannot be
+# mistaken for Controller lifecycle activity.
+sleep 1
+events_until=$(date +%s)
+if [ "$events_until" -le "$events_since" ]; then events_until=$((events_since + 1)); fi
+event_stream=$(docker events \
+  --since "$events_since" \
+  --until "$events_until" \
+  --filter type=container \
+  --format '{{json .}}')
+printf '%s\n' "$event_stream" >&2
+
+event_count() {
+  event_name=$1
+  container_name=${2:-}
+  if [ -n "$container_name" ]; then
+    docker events \
+      --since "$events_since" \
+      --until "$events_until" \
+      --filter type=container \
+      --filter "event=$event_name" \
+      --filter "container=$container_name" \
+      --format '{{.ID}}' \
+      | awk 'NF { count += 1 } END { print count + 0 }'
+  else
+    docker events \
+      --since "$events_since" \
+      --until "$events_until" \
+      --filter type=container \
+      --filter "event=$event_name" \
+      --format '{{.ID}}' \
+      | awk 'NF { count += 1 } END { print count + 0 }'
+  fi
+}
+
+create_event_count=$(event_count create "")
+destroy_event_count=$(event_count destroy "")
+target_start_events=$(event_count start "$target_instance_id")
+target_stop_events=$(event_count stop "$target_instance_id")
+target_restart_events=$(event_count restart "$target_instance_id")
+target_die_events=$(event_count die "$target_instance_id")
+
+target_exists=false
+target_running=false
+target_same_id=false
+target_managed=false
+current_id=""
+if docker inspect "$target_instance_id" >/dev/null 2>&1; then
+  target_exists=true
+  current_id=$(docker inspect --format '{{.Id}}' "$target_instance_id")
+  if [ "$current_id" = "$baseline_id" ]; then target_same_id=true; fi
+  if [ "$(docker inspect --format '{{.State.Running}}' "$target_instance_id")" = true ]; then
+    target_running=true
+  fi
+  if [ "$(docker inspect --format '{{index .Config.Labels "poc.managed"}}' "$target_instance_id")" = true ]; then
+    target_managed=true
+  fi
+fi
+
+logical_restart_count=$target_restart_events
+stop_start_pairs=$target_stop_events
+if [ "$target_start_events" -lt "$stop_start_pairs" ]; then
+  stop_start_pairs=$target_start_events
+fi
+if [ "$stop_start_pairs" -gt "$logical_restart_count" ]; then
+  logical_restart_count=$stop_start_pairs
+fi
+
+core_volume="hermes-fixture-core-state-$run_id"
+persistent_volume="hermes-fixture-state-$run_id"
+core_volume_attached=false
+persistent_volume_attached=false
+if [ "$target_exists" = true ]; then
+  mounted_core=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/runtime-state"}}{{.Name}}{{end}}{{end}}' "$target_instance_id")
+  mounted_persistent=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/state"}}{{.Name}}{{end}}{{end}}' "$target_instance_id")
+  if [ "$mounted_core" = "$core_volume" ]; then core_volume_attached=true; fi
+  if [ "$mounted_persistent" = "$persistent_volume" ]; then persistent_volume_attached=true; fi
+fi
+
+core_marker_present=false
+if docker volume inspect "$core_volume" >/dev/null 2>&1 \
+  && docker run --rm --user 0:0 --entrypoint /bin/sh \
+    --volume "$core_volume:/state:ro" "$fixture_image" \
+    -c 'test "$(cat /state/runtime-004.marker 2>/dev/null)" = "$1"' \
+    _ "RUNTIME-004-VOLUME-$run_id"; then
+  core_marker_present=true
+fi
+
+persistent_marker_present=false
+if docker volume inspect "$persistent_volume" >/dev/null 2>&1 \
+  && docker run --rm --user 0:0 --entrypoint /bin/sh \
+    --volume "$persistent_volume:/state:ro" "$fixture_image" \
+    -c 'test "$(cat /state/persistent-marker 2>/dev/null)" = "$1"' \
+    _ "PERSISTENT_MARKER_$run_id"; then
+  persistent_marker_present=true
+fi
+
+no_container_created=false
+no_container_destroyed=false
+if [ "$create_event_count" -eq 0 ]; then no_container_created=true; fi
+if [ "$destroy_event_count" -eq 0 ]; then no_container_destroyed=true; fi
+
+requirement_ids='[]'
+verdict=true
+case "$test_case_id" in
+  RUNTIME-003)
+    requirement_ids='["RT-03","RT-09"]'
+    if [ "$target_running" != true ] || [ "$target_start_events" -ne 1 ]; then verdict=false; fi
+    ;;
+  RUNTIME-004)
+    requirement_ids='["RT-04"]'
+    if [ "$target_running" != false ] \
+      || [ "$target_stop_events" -ne 1 ] \
+      || [ "$target_same_id" != true ] \
+      || [ "$core_volume_attached" != true ] \
+      || [ "$core_marker_present" != true ]; then verdict=false; fi
+    ;;
+  RUNTIME-005)
+    requirement_ids='["RT-05"]'
+    if [ "$target_running" != true ] \
+      || [ "$target_same_id" != true ] \
+      || [ "$logical_restart_count" -ne 1 ]; then verdict=false; fi
+    ;;
+  RUNTIME-006)
+    requirement_ids='["RT-06"]'
+    if [ "$target_running" != true ] \
+      || [ "$target_start_events" -ne 0 ] \
+      || [ "$target_stop_events" -ne 0 ] \
+      || [ "$target_restart_events" -ne 0 ]; then verdict=false; fi
+    ;;
+  RUNTIME-007)
+    requirement_ids='["RT-06"]'
+    if [ "$target_running" != false ] \
+      || [ "$target_start_events" -ne 0 ] \
+      || [ "$target_stop_events" -ne 0 ] \
+      || [ "$target_restart_events" -ne 0 ]; then verdict=false; fi
+    ;;
+  RUNTIME-008)
+    requirement_ids='["RT-07"]'
+    # Frozen v0.2 does not choose the winner. The runner records which action
+    # satisfied the state machine, and this Engine window proves that exact
+    # branch rather than accepting an unrelated side effect.
+    if [ "$winning_action" = START ]; then
+      if [ "$target_running" != true ] \
+        || [ "$target_start_events" -ne 1 ] \
+        || [ "$target_stop_events" -ne 0 ] \
+        || [ "$target_restart_events" -ne 0 ]; then verdict=false; fi
+    elif [ "$winning_action" = STOP ] \
+      && { [ "$target_running" != false ] \
+      || [ "$target_start_events" -ne 0 ] \
+      || [ "$target_stop_events" -ne 0 ] \
+      || [ "$target_restart_events" -ne 0 ]; }; then
+      verdict=false
+    elif [ "$winning_action" = MULTIPLE ] \
+      || [ "$winning_action" = NONE ] \
+      || [ "$winning_action" = UNRESOLVED ]; then
+      verdict=false
+    fi
+    ;;
+  RUNTIME-009)
+    requirement_ids='["RT-08"]'
+    if [ "$target_start_events" -ne 1 ]; then verdict=false; fi
+    ;;
+  RUNTIME-012)
+    requirement_ids='["RT-10","RT-11"]'
+    if [ "$target_running" != true ] \
+      || [ "$target_managed" != false ] \
+      || [ "$target_stop_events" -ne 0 ] \
+      || [ "$target_die_events" -ne 0 ]; then verdict=false; fi
+    ;;
+  RUNTIME-013)
+    requirement_ids='["RT-13","NF-03"]'
+    if [ "$target_running" != true ]; then verdict=false; fi
+    ;;
+  RUNTIME-014)
+    requirement_ids='["RT-05"]'
+    if [ "$target_running" != true ] \
+      || [ "$target_same_id" != true ] \
+      || [ "$persistent_volume_attached" != true ] \
+      || [ "$persistent_marker_present" != true ] \
+      || [ "$logical_restart_count" -ne 1 ]; then verdict=false; fi
+    ;;
+  RUNTIME-017)
+    requirement_ids='["RT-06"]'
+    if [ "$target_running" != true ] \
+      || [ "$target_same_id" != true ] \
+      || [ "$logical_restart_count" -ne 1 ]; then verdict=false; fi
+    ;;
+esac
+
+if [ "$exact_container_set" != true ] \
+  || [ "$labels_valid" != true ] \
+  || [ "$target_exists" != true ] \
+  || [ "$no_container_created" != true ] \
+  || [ "$no_container_destroyed" != true ]; then
+  verdict=false
+fi
+
+printf '%s\n' \
+  "{\"run_id\":\"$run_id\",\"test_case_id\":\"$test_case_id\",\"requirement_ids\":$requirement_ids,\"verdict\":$verdict,\"winning_action\":\"$winning_action\",\"target_instance_id\":\"$target_instance_id\",\"target_exists\":$target_exists,\"target_running\":$target_running,\"target_same_id\":$target_same_id,\"target_managed\":$target_managed,\"actual_containers\":\"$actual_csv\",\"exact_container_set\":$exact_container_set,\"fixture_labels_valid\":$labels_valid,\"container_create_events\":$create_event_count,\"container_destroy_events\":$destroy_event_count,\"no_container_created_by_controller\":$no_container_created,\"no_container_destroyed_by_controller\":$no_container_destroyed,\"target_start_events\":$target_start_events,\"target_stop_events\":$target_stop_events,\"target_restart_events\":$target_restart_events,\"target_die_events\":$target_die_events,\"logical_restart_count\":$logical_restart_count,\"core_volume_attached\":$core_volume_attached,\"core_marker_present\":$core_marker_present,\"persistent_volume_attached\":$persistent_volume_attached,\"persistent_marker_present\":$persistent_marker_present}"
+
+if [ "$verdict" != true ]; then exit 1; fi

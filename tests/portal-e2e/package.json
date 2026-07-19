@@ -1,0 +1,24 @@
+{
+  "name": "hermes-poc-portal-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "description": "External-container Portal E2E runner for Hermes PoC Portal",
+  "scripts": {
+    "test": "playwright test",
+    "test:unit": "tsx --test unit/**/*.test.ts",
+    "test:list": "playwright test --list",
+    "test:preflight": "playwright test tests/preflight.spec.ts",
+    "test:network": "playwright test tests/network-isolation.spec.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.0",
+    "@types/node": "20.19.43",
+    "tsx": "4.23.1",
+    "typescript": "5.9.3",
+    "yaml": "2.9.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

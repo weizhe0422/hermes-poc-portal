@@ -1,0 +1,55 @@
+# Test-owned fixture inventory; bundled source fixtures remain read-only.
+schema_version: 0.1.0
+fixture_type: SYNTHETIC
+
+runtime_fixture:
+  image: hermes-poc-hermes-fixture:0.1.0
+  managed_label: poc.managed=true
+  run_label: poc.test-run
+  modes:
+    - HEALTHY
+    - SLOW_START
+    - UNHEALTHY
+    - CRASH
+    - SECRET_LOG
+    - PERSISTENT
+  t_m1_instances:
+    - instance_id: hermes-fixture-001
+      mode: HEALTHY; recreated as SLOW_START for RUNTIME-017 only
+      initial_state: stopped
+      persistent_volume: hermes-fixture-core-state-<run-id>
+      test_case_ids: [RUNTIME-001, RUNTIME-003, RUNTIME-004, RUNTIME-005, RUNTIME-006, RUNTIME-007, RUNTIME-017]
+    - instance_id: hermes-fixture-slow
+      mode: SLOW_START
+      initial_state: stopped
+      start_delay_seconds: 10
+      test_case_ids: [RUNTIME-008, RUNTIME-009]
+    - instance_id: unmanaged-fixture-001
+      mode: HEALTHY
+      managed_label: absent by design
+      initial_state: running
+      test_case_ids: [RUNTIME-012]
+    - instance_id: hermes-fixture-secret
+      mode: SECRET_LOG
+      initial_state: running
+      synthetic_secret: TEST_SECRET_123456
+      test_case_ids: [RUNTIME-013]
+    - instance_id: hermes-fixture-persistent
+      mode: PERSISTENT
+      initial_state: running
+      test_case_ids: [RUNTIME-014]
+      evidence: health is gated by a marker seeded in a run-scoped volume
+
+bundled_read_only_fixtures:
+  - path: hermes-poc-specification-v0.1/test-fixtures/knowledge/control-wafer/CW-TEST-001.md
+    milestone: T-M4
+  - path: hermes-poc-specification-v0.1/test-fixtures/knowledge/control-wafer/CW-TEST-002.md
+    milestone: T-M4
+  - path: hermes-poc-specification-v0.1/test-fixtures/knowledge/control-wafer/IMG-CW-001.md
+    milestone: T-M4
+  - path: hermes-poc-specification-v0.1/test-fixtures/knowledge/control-wafer/IMG-CW-001.svg
+    milestone: T-M4
+  - path: hermes-poc-specification-v0.1/test-fixtures/knowledge/deployment/DEPLOY-SOP-TEST-001.md
+    milestone: T-M4
+  - path: hermes-poc-specification-v0.1/test-fixtures/skills/deployment-check/SKILL.md
+    milestone: T-M4
