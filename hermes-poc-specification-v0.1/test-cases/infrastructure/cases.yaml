@@ -1,0 +1,132 @@
+# 文件目的：提供Infrastructure、Security與Artifact的黑箱測試案例。
+# 適用角色：測試實作者、功能測試執行者。
+# 狀態：Frozen v0.2.0。
+
+suite_id: infrastructure-v0.2
+fixture_type: SYNTHETIC
+cases:
+  - case_id: SECURITY-001
+    purpose: 確保Host網路隔離，符合Architecture與Security Contract。
+    scenario: SECURITY
+    requirement_ids: [BLD-07]
+    critical: true
+    preconditions: [portal and controller are running]
+    input: {action: NETWORK_SCAN, target: HOST}
+    expected:
+      host_ports_published: [8080] # 只有Portal Port公開
+      controller_published: false
+      hermes_published: false
+    verdict_mode: AUTOMATED
+
+  - case_id: SECURITY-002
+    purpose: 驗證Portal E2E Runner的網路隔離，符合Architecture與Security Contract。
+    scenario: SECURITY
+    requirement_ids: [E2E-01, E2E-02]
+    critical: true
+    preconditions: [e2e runner is deployed]
+    input: {action: CONNECTIVITY_TEST, from: RUNNER}
+    expected:
+      is_independent_container: true
+      networks: [e2e-network]
+      can_connect_portal: true
+      can_connect_controller: false
+      can_connect_hermes: false
+    verdict_mode: AUTOMATED
+
+  - case_id: SECURITY-003
+    purpose: 驗證Portal E2E Runner的掛載隔離，符合Architecture與Security Contract。
+    scenario: SECURITY
+    requirement_ids: [E2E-02]
+    critical: true
+    preconditions: [e2e runner is deployed]
+    input: {action: MOUNT_TEST, target: RUNNER}
+    expected:
+      has_docker_socket: false
+      has_knowledge_mount: false
+      has_skill_mount: false
+      has_formal_volume: false
+      has_writable_source_mount: false
+      can_access_git_metadata: false
+    verdict_mode: AUTOMATED
+
+  - case_id: EXECUTION-001
+    purpose: 確保測試失敗會反映在Exit Code。
+    scenario: TEST_EXECUTION
+    requirement_ids: [E2E-05]
+    critical: true
+    preconditions: [inject deterministic failure]
+    input: {action: RUN_TESTS}
+    expected:
+      exit_code_is_zero: false
+      failure_converted_to_success: false
+    verdict_mode: AUTOMATED
+
+  - case_id: EXECUTION-002
+    purpose: 測試失敗必須產生必要證據。
+    scenario: TEST_EXECUTION
+    requirement_ids: [E2E-06]
+    critical: true
+    preconditions: [inject deterministic failure]
+    input: {action: RUN_TESTS}
+    expected:
+      artifacts_generated: [junit, trace, log]
+      artifact_contains_run_id: true
+      artifact_contains_case_id: true
+    verdict_mode: AUTOMATED
+
+  - case_id: EXECUTION-003
+    purpose: 避免Critical Case首次失敗被自動Retry掩蓋。
+    scenario: TEST_EXECUTION
+    requirement_ids: [E2E-07]
+    critical: true
+    preconditions: [inject flaky failure on critical case]
+    input: {action: RUN_TESTS}
+    expected:
+      failure_retained: true
+      auto_retried_to_pass: false
+      attempt_count: 1
+    verdict_mode: AUTOMATED
+
+  - case_id: EXECUTION-004
+    purpose: 驗證Runner不會更改Git狀態且無法取得Repository metadata。
+    scenario: TEST_EXECUTION
+    requirement_ids: [E2E-08]
+    critical: true
+    preconditions: [EXTERNAL_ORCHESTRATOR exists]
+    input: {action: RUN_TESTS_FROM_ORCHESTRATOR}
+    expected:
+      git_status_unchanged: true
+      runner_has_git_metadata: false
+      runner_has_writable_source: false
+      only_gitignore_artifacts_allowed: true
+    verdict_mode: AUTOMATED
+
+  - case_id: ARTIFACT-001
+    purpose: 驗證Artifact留存及範圍。
+    scenario: ARTIFACT
+    requirement_ids: [BLD-08]
+    critical: true
+    preconditions: [tests completed]
+    input: {action: CHECK_ARTIFACTS}
+    expected:
+      written_to_independent_volume: true
+      readable_after_runner_exit: true
+      required_files_present: [manifest, summary, junit]
+      trace_and_log_accessible: true
+      contains_test_secrets: false
+    verdict_mode: AUTOMATED
+
+  - case_id: CONTROLLER-ENV-001
+    purpose: 驗證Controller測試環境的隔離性。
+    scenario: BUILD
+    requirement_ids: [E2E-03, E2E-04]
+    critical: true
+    preconditions: [controller e2e runner is deployed]
+    input: {action: ISOLATION_TEST}
+    expected:
+      is_independent_container: true
+      uses_isolated_docker_engine: true
+      has_docker_socket: false
+      can_affect_dev_or_prod_containers: false
+      cleanup_limited_to_run_id: true
+    verdict_mode: AUTOMATED

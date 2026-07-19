@@ -61,8 +61,13 @@ Live Hermes E2E
         ↓
 Golden Cases
         ↓
-Collect Evidence and Verify Clean Tree
+Collect Evidence and Verify Clean Tree (由外部Orchestrator執行)
 ```
+
+**測試隔離要求 (EXECUTION-004)**：
+- 測試必須由外部 Orchestrator 執行並在結束後比對 Git 狀態，確認沒有非預期的程式碼變更。
+- 測試 Runner 執行期間，**絕對不得取得 `.git` 目錄或 Writable Source Mount**。
+- 只允許將產出的 Artifact 寫入已被 `.gitignore` 排除的 `test-results` 目錄。
 
 ## Exit Code
 

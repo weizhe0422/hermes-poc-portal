@@ -1,8 +1,9 @@
 # 文件目的：定義Hermes Runtime可觀察狀態、事件、合法轉移、冪等行為及錯誤語意；Portal、Controller與E2E均須遵守。
+# Contract只能限制外部可觀察行為，不得要求平台一定使用Docker Event、Polling或特定內部實作。
 # 適用角色：平台實作者、測試實作者、功能測試執行者。
-# 狀態：Draft v0.1。
+# 狀態：Frozen v0.2.0。
 
-contract_version: 0.1.0
+contract_version: 0.2.0
 initial_state: NOT_PROVISIONED
 
 states:
@@ -17,7 +18,7 @@ states:
   UNHEALTHY:
     description: Container Running，但Hermes或LLM健康檢查失敗。
   STOPPING:
-    description: Stop已接受，等待Container停止。
+    description: Stop或Restart的第一階段已接受，等待Container停止。
   ERROR:
     description: Lifecycle操作失敗或逾時，且錯誤已被保存。
 
@@ -42,6 +43,8 @@ transitions:
   - from: STOPPED
     event: START_REQUESTED
     to: STARTING
+    action: START
+    http_status: 202
   - from: STARTING
     event: START_SUCCEEDED
     to: HEALTHY
@@ -54,12 +57,18 @@ transitions:
   - from: HEALTHY
     event: STOP_REQUESTED
     to: STOPPING
+    action: STOP
+    http_status: 202
   - from: UNHEALTHY
     event: STOP_REQUESTED
     to: STOPPING
+    action: STOP
+    http_status: 202
   - from: ERROR
     event: STOP_REQUESTED
     to: STOPPING
+    action: STOP
+    http_status: 202
   - from: STOPPING
     event: STOP_SUCCEEDED
     to: STOPPED
@@ -69,14 +78,20 @@ transitions:
   - from: HEALTHY
     event: RESTART_REQUESTED
     to: STOPPING
+    action: RESTART
+    http_status: 202
     continuation: START_REQUESTED
   - from: UNHEALTHY
     event: RESTART_REQUESTED
     to: STOPPING
+    action: RESTART
+    http_status: 202
     continuation: START_REQUESTED
   - from: ERROR
     event: RESTART_REQUESTED
     to: STOPPING
+    action: RESTART
+    http_status: 202
     continuation: START_REQUESTED
   - from: UNHEALTHY
     event: HEALTH_RECOVERED
@@ -97,23 +112,42 @@ transitions:
     event: INSTANCE_REMOVED_EXTERNALLY
     to: NOT_PROVISIONED
 
-idempotent_requests:
-  - state: HEALTHY
-    action: START
+idempotency_rules:
+  - rule: START_IDEMPOTENCY
+    current_state: HEALTHY
+    requested_action: START
     http_status: 200
     result: NO_OP_ALREADY_STARTED
-  - state: STARTING
-    action: START
-    http_status: 202
-    result: EXISTING_OPERATION
-  - state: STOPPED
-    action: STOP
+  - rule: STOP_IDEMPOTENCY
+    current_state: STOPPED
+    requested_action: STOP
     http_status: 200
     result: NO_OP_ALREADY_STOPPED
-  - state: STOPPING
-    action: STOP
+  - rule: RESTART_IDEMPOTENCY_WINDOW
+    description: "Restart冪等窗口從首次接受開始，到HEALTHY、UNHEALTHY或ERROR終態為止，不以固定秒數決定。(註：Restart的Stop與Start階段仍受對應Timeout限制，只是不另外使用固定時間判斷重複Restart)"
+
+contextual_idempotency_rules:
+  - description: "若current operation.action與requested action均為相同Lifecycle，且Operation尚未終止，優先適用EXISTING_OPERATION，不得被一般invalid rule判成409。"
+    current_operation_action: START
+    requested_action: START
+    allowed_states: [STARTING]
     http_status: 202
     result: EXISTING_OPERATION
+    requires_same_operation_id: true
+  - description: "相同Stop仍在執行"
+    current_operation_action: STOP
+    requested_action: STOP
+    allowed_states: [STOPPING]
+    http_status: 202
+    result: EXISTING_OPERATION
+    requires_same_operation_id: true
+  - description: "相同Restart仍在執行"
+    current_operation_action: RESTART
+    requested_action: RESTART
+    allowed_states: [STOPPING, STARTING]
+    http_status: 202
+    result: EXISTING_OPERATION
+    requires_same_operation_id: true
 
 invalid_requests:
   - state: NOT_PROVISIONED
@@ -128,10 +162,12 @@ invalid_requests:
     actions: [STOP, RESTART]
     http_status: 409
     error_code: OPERATION_CONFLICT
+    condition: "requested_action != current_operation_action"
   - state: STOPPING
-    actions: [START, RESTART]
+    actions: [START, STOP, RESTART]
     http_status: 409
     error_code: OPERATION_CONFLICT
+    condition: "requested_action != current_operation_action"
 
 health_contract:
   healthy_requires:
@@ -142,7 +178,5 @@ health_contract:
 
 operation_rules:
   one_operation_per_instance: true
-  start_timeout_seconds_from_environment: HERMES_START_TIMEOUT_SECONDS
-  stop_timeout_seconds_from_environment: HERMES_STOP_TIMEOUT_SECONDS
   restart_preserves_volumes: true
   start_never_creates_arbitrary_instance: true
