@@ -123,13 +123,35 @@ emergency_cleanup() {
 trap emergency_cleanup EXIT
 trap 'exit 70' INT TERM
 
-echo "building Controller E2E runner and synthetic Hermes fixture"
-if ! docker build \
-  --file tests/hermes-fixture/Dockerfile \
-  --tag "$HERMES_FIXTURE_IMAGE" \
-  --build-arg "PYTHON_IMAGE=${TEST_PYTHON_IMAGE:-python:3.13.5-slim-bookworm}" \
-  --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple}" \
-  tests/hermes-fixture; then
+echo "building Controller E2E runner and preparing synthetic Hermes fixture"
+prebuilt_fixture_id=${HERMES_FIXTURE_PREBUILT_ID:-}
+if [ -n "$prebuilt_fixture_id" ]; then
+  case "$prebuilt_fixture_id" in
+    sha256:*) prebuilt_fixture_digest=${prebuilt_fixture_id#sha256:} ;;
+    *) echo "HERMES_FIXTURE_PREBUILT_ID must be an immutable sha256 image ID" >&2; exit 70 ;;
+  esac
+  case "$prebuilt_fixture_digest" in
+    ''|*[!0-9a-f]*)
+      echo "HERMES_FIXTURE_PREBUILT_ID must be an immutable sha256 image ID" >&2
+      exit 70 ;;
+  esac
+  if [ "${#prebuilt_fixture_digest}" -ne 64 ]; then
+    echo "HERMES_FIXTURE_PREBUILT_ID must be an immutable sha256 image ID" >&2
+    exit 70
+  fi
+  actual_fixture_id=$(docker image inspect --format '{{.Id}}' \
+    "$HERMES_FIXTURE_IMAGE" 2>/dev/null || true)
+  if [ "$actual_fixture_id" != "$prebuilt_fixture_id" ]; then
+    echo "prebuilt Hermes fixture tag does not match its immutable image ID" >&2
+    exit 70
+  fi
+  echo "reusing synthetic Hermes fixture $prebuilt_fixture_id"
+elif ! docker build \
+    --file tests/hermes-fixture/Dockerfile \
+    --tag "$HERMES_FIXTURE_IMAGE" \
+    --build-arg "PYTHON_IMAGE=${TEST_PYTHON_IMAGE:-python:3.13.5-slim-bookworm}" \
+    --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL:-https://pypi.org/simple}" \
+    tests/hermes-fixture; then
   exit 10
 fi
 if ! $compose build controller-e2e-runner; then
@@ -329,8 +351,10 @@ try:
 except (OSError, ValueError):
     value = {}
 action = value.get("winning_action")
-if value.get("test_case_id") == "RUNTIME-008" and action in {"START", "STOP"}:
-    print(action)
+if value.get("test_case_id") == "RUNTIME-008":
+    observation = value.get("engine_observation", action)
+    if observation in {"START", "STOP", "MULTIPLE", "NONE", "UNRESOLVED"}:
+        print(observation)
 PY
 )
     if [ "$winning_action" = START ]; then
@@ -345,7 +369,10 @@ PY
         fi
         sleep 0.1
       done
-    elif [ "$winning_action" != STOP ]; then
+    elif [ "$winning_action" != STOP ] \
+      && [ "$winning_action" != MULTIPLE ] \
+      && [ "$winning_action" != NONE ] \
+      && [ "$winning_action" != UNRESOLVED ]; then
       evidence_status=1
     fi
   fi

@@ -21,8 +21,8 @@ case "$target_instance_id" in
 esac
 if [ "$test_case_id" = RUNTIME-008 ]; then
   case "$winning_action" in
-    START|STOP) ;;
-    *) echo "RUNTIME-008 winning action evidence is required" >&2; exit 70 ;;
+    START|STOP|MULTIPLE|NONE|UNRESOLVED) ;;
+    *) echo "RUNTIME-008 API operation observation is required" >&2; exit 70 ;;
   esac
 fi
 case "$events_since" in
@@ -222,10 +222,15 @@ case "$test_case_id" in
         || [ "$target_start_events" -ne 1 ] \
         || [ "$target_stop_events" -ne 0 ] \
         || [ "$target_restart_events" -ne 0 ]; then verdict=false; fi
-    elif [ "$target_running" != false ] \
+    elif [ "$winning_action" = STOP ] \
+      && { [ "$target_running" != false ] \
       || [ "$target_start_events" -ne 0 ] \
       || [ "$target_stop_events" -ne 0 ] \
-      || [ "$target_restart_events" -ne 0 ]; then
+      || [ "$target_restart_events" -ne 0 ]; }; then
+      verdict=false
+    elif [ "$winning_action" = MULTIPLE ] \
+      || [ "$winning_action" = NONE ] \
+      || [ "$winning_action" = UNRESOLVED ]; then
       verdict=false
     fi
     ;;

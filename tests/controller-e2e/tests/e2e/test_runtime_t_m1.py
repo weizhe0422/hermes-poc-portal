@@ -466,17 +466,106 @@ def test_runtime_008_serializes_parallel_lifecycle_actions(
     require(len(actions) == 2, "RUNTIME-008 requires exactly two parallel actions")
     barrier = Barrier(len(actions))
 
-    def invoke(action: str) -> tuple[str, ValidatedResponse]:
+    def invoke(
+        action: str,
+    ) -> tuple[str, ValidatedResponse | None, Exception | None]:
         barrier.wait()
-        return action, _invoke_lifecycle(controller_client, action, instance_id)
+        try:
+            return (
+                action,
+                _invoke_lifecycle(controller_client, action, instance_id),
+                None,
+            )
+        except Exception as exc:
+            return action, None, exc
 
     with ThreadPoolExecutor(max_workers=len(actions)) as executor:
         futures = [executor.submit(invoke, action) for action in actions]
         observations = [future.result() for future in futures]
 
+    validated_observations = [
+        (action, response)
+        for action, response, _error in observations
+        if response is not None
+    ]
+    observation_errors = [
+        error
+        for _action, _response, error in observations
+        if isinstance(error, Exception)
+    ]
+    operation_actions = [
+        action
+        for action, response in validated_observations
+        if isinstance(response.payload.get("operation"), dict)
+        and response.payload["operation"].get("action") == action
+    ]
+    accepted_actions = [
+        action
+        for action, response in validated_observations
+        if response.status_code < 300
+    ]
+    engine_winning_action = None
+    if len(operation_actions) == 1:
+        engine_winning_action = operation_actions[0]
+    elif not operation_actions and len(accepted_actions) == 1:
+        # STOP may be the serialized, idempotent no-op branch and therefore
+        # legitimately have no operation object or Engine lifecycle event.
+        engine_winning_action = accepted_actions[0]
+    if observation_errors:
+        engine_observation = "UNRESOLVED"
+        engine_winning_action = None
+    elif engine_winning_action is not None:
+        engine_observation = engine_winning_action
+    elif operation_actions:
+        engine_observation = "MULTIPLE"
+    else:
+        engine_observation = "NONE"
+    # Always persist the raw API outcome before asserting the Frozen cardinality.
+    # A Candidate mismatch must not break the independent Engine evidence chain.
+    (runner_config.results_dir / "engine-context.json").write_text(
+        json.dumps(
+            {
+                "test_case_id": runtime_case.case_id,
+                "accepted_actions": accepted_actions,
+                "operation_actions": operation_actions,
+                "winning_action": engine_winning_action,
+                "engine_observation": engine_observation,
+                "responses": [
+                    {
+                        "action": action,
+                        "http_status": response.status_code,
+                        "operation_action": (
+                            response.payload.get("operation", {}).get("action")
+                            if isinstance(response.payload.get("operation"), dict)
+                            else None
+                        ),
+                        "error_class": None,
+                    }
+                    for action, response, error in observations
+                    if response is not None
+                ]
+                + [
+                    {
+                        "action": action,
+                        "http_status": None,
+                        "operation_action": None,
+                        "error_class": type(error).__name__,
+                    }
+                    for action, response, error in observations
+                    if response is None and error is not None
+                ],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    if observation_errors:
+        raise observation_errors[0]
     successful = [
         (action, response)
-        for action, response in observations
+        for action, response in validated_observations
         if response.status_code < 300
     ]
     expected_successes = (
@@ -488,17 +577,10 @@ def test_runtime_008_serializes_parallel_lifecycle_actions(
         "RUNTIME-008 accepted operation count",
     )
     winning_action, winning_response = successful[0]
-    (runner_config.results_dir / "engine-context.json").write_text(
-        json.dumps(
-            {
-                "test_case_id": runtime_case.case_id,
-                "winning_action": winning_action,
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        )
-        + "\n",
-        encoding="utf-8",
+    require_equal(
+        engine_winning_action,
+        winning_action,
+        "RUNTIME-008 Engine branch winner",
     )
     winning_contract = contracts.lifecycle_request_outcome(
         "STOPPED", winning_action
@@ -523,7 +605,7 @@ def test_runtime_008_serializes_parallel_lifecycle_actions(
         )
     conflicts = [
         response
-        for _, response in observations
+        for _, response in validated_observations
         if response.status_code == runtime_case.expected["conflict_http_status"]
     ]
     require_equal(len(conflicts), 1, "RUNTIME-008 conflict response count")

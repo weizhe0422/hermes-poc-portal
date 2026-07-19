@@ -35,8 +35,29 @@ RUN_ID="$infra_run_id" TEST_RESULTS_ROOT="$results_root" \
   "$repo_root/scripts/run-portal-e2e"
 infra_status=$?
 
-RUN_ID="$runtime_run_id" TEST_RESULTS_ROOT="$results_root" \
-  "$repo_root/scripts/run-controller-e2e"
+prebuilt_fixture_id=$(python3 - "$results_root/$infra_run_id/manifest.yaml" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+try:
+    value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+except (OSError, ValueError):
+    value = {}
+image_id = value.get("image_ids", {}).get("hermes_fixture")
+if isinstance(image_id, str) and re.fullmatch(r"sha256:[0-9a-f]{64}", image_id):
+    print(image_id)
+PY
+)
+if [ -n "$prebuilt_fixture_id" ]; then
+  RUN_ID="$runtime_run_id" TEST_RESULTS_ROOT="$results_root" \
+    HERMES_FIXTURE_PREBUILT_ID="$prebuilt_fixture_id" \
+    "$repo_root/scripts/run-controller-e2e"
+else
+  RUN_ID="$runtime_run_id" TEST_RESULTS_ROOT="$results_root" \
+    "$repo_root/scripts/run-controller-e2e"
+fi
 runtime_status=$?
 
 python3 "$repo_root/scripts/collect-test-results" --master \

@@ -155,7 +155,6 @@ networks:
     internal: true
     labels: *test-labels
   portal-network:
-    internal: true
     labels: *test-labels
   agent-network:
     internal: true

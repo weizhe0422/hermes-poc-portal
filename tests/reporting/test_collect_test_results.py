@@ -738,6 +738,10 @@ def test_master_collector_retains_a_frozen_child_failure(tmp_path: Path) -> None
     runner_status = json.loads(runner_status_path.read_text(encoding="utf-8"))
     runner_status["runner_passed"] = False
     runner_status_path.write_text(json.dumps(runner_status), encoding="utf-8")
+    child_summary_path = runtime_root / "summary.json"
+    child_summary = json.loads(child_summary_path.read_text(encoding="utf-8"))
+    child_summary["status"] = "FAIL"
+    child_summary_path.write_text(json.dumps(child_summary), encoding="utf-8")
 
     completed = _run_master_collector(
         tmp_path,
@@ -755,6 +759,10 @@ def test_master_collector_retains_a_frozen_child_failure(tmp_path: Path) -> None
     assert summary["status"] == "FAIL"
     assert summary["counts"]["failed"] == 1
     assert summary["critical_not_passed"] == ["RUNTIME-001"]
+    assert summary["artifact_errors"] == []
+    assert next(
+        case for case in summary["cases"] if case["test_case_id"] == "ARTIFACT-001"
+    )["status"] == "PASSED"
     assert next(
         case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-001"
     )["status"] == "FAILED"
@@ -1403,6 +1411,136 @@ def test_collector_rejects_runtime_008_winner_evidence_drift(
         case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-008"
     )
     assert runtime_008["status"] == "FAILED"
+
+
+def test_collector_accepts_extended_runtime_008_engine_context(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-runtime-008-extended-context"
+    _write_junit(run_root)
+    context_path = run_root / "controller-e2e/runtime-008/engine-context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "test_case_id": "RUNTIME-008",
+                "accepted_actions": ["STOP", "START"],
+                "operation_actions": ["START"],
+                "winning_action": "START",
+                "engine_observation": "START",
+                "responses": [
+                    {
+                        "action": "STOP",
+                        "http_status": 200,
+                        "operation_action": None,
+                    },
+                    {
+                        "action": "START",
+                        "http_status": 202,
+                        "operation_action": "START",
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 0, completed.stderr
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["status"] == "PASS"
+
+
+def test_collector_rejects_contradictory_runtime_008_engine_context(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-runtime-008-contradictory-context"
+    _write_junit(run_root)
+    context_path = run_root / "controller-e2e/runtime-008/engine-context.json"
+    context_path.write_text(
+        json.dumps(
+            {
+                "test_case_id": "RUNTIME-008",
+                "accepted_actions": ["START"],
+                "operation_actions": ["START"],
+                "winning_action": "STOP",
+                "engine_observation": "STOP",
+                "responses": [
+                    {
+                        "action": "START",
+                        "http_status": 202,
+                        "operation_action": "START",
+                        "error_class": None,
+                    },
+                    {
+                        "action": "STOP",
+                        "http_status": 409,
+                        "operation_action": None,
+                        "error_class": None,
+                    },
+                ],
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert (
+        "RUNTIME-008 Engine context observation is inconsistent"
+        in summary["artifact_errors"]
+    )
+
+
+def test_collector_treats_failed_engine_verdict_as_case_failure_not_artifact_error(
+    tmp_path: Path,
+) -> None:
+    run_root = tmp_path / "run-engine-invariant-failure"
+    _write_junit(run_root)
+    junit_path = run_root / "junit/controller.xml"
+    tree = ET.parse(junit_path)
+    target = next(
+        testcase
+        for testcase in tree.getroot().iter("testcase")
+        if any(
+            prop.get("name") == "test_case_id"
+            and prop.get("value") == "RUNTIME-006"
+            for prop in testcase.findall("./properties/property")
+        )
+    )
+    engine_property = next(
+        prop
+        for prop in target.findall("./properties/property")
+        if prop.get("name") == "engine_evidence"
+    )
+    engine_property.set("value", "FAIL")
+    ET.SubElement(target, "failure", message="isolated Engine invariant failed")
+    tree.write(junit_path, encoding="utf-8", xml_declaration=True)
+    evidence_path = (
+        run_root / "controller-e2e/docker-snapshots/evidence-RUNTIME-006.json"
+    )
+    evidence = json.loads(evidence_path.read_text(encoding="utf-8"))
+    evidence["verdict"] = False
+    evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+    status_path = run_root / "controller-e2e/runner-status.json"
+    status = json.loads(status_path.read_text(encoding="utf-8"))
+    status["runner_passed"] = False
+    status_path.write_text(json.dumps(status), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    runtime_006 = next(
+        case for case in summary["cases"] if case["test_case_id"] == "RUNTIME-006"
+    )
+    assert runtime_006["status"] == "FAILED"
+    assert summary["artifact_errors"] == []
+    assert summary["metadata_errors"] == []
 
 
 def test_collector_rejects_symbolic_link_artifacts(tmp_path: Path) -> None:

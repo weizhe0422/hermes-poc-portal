@@ -25,6 +25,13 @@ from .errors import (
 COVERAGE_GAPS: tuple[dict[str, Any], ...] = ()
 
 
+def _upsert_user_property(
+    properties: list[tuple[str, object]], name: str, value: str
+) -> None:
+    properties[:] = [item for item in properties if item[0] != name]
+    properties.append((name, value))
+
+
 def _failure_classification(exception: BaseException | None) -> str:
     if exception is None:
         return "NONE"
@@ -106,13 +113,22 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[Any]):
         existing["status"] = "FAIL"
         existing["failure_classification"] = classification
         existing["failure"] = str(report.longrepr)[:12000]
-        report.user_properties.append(("failure_classification", classification))
+        # pytest's JUnit writer uses the teardown report's item properties.
+        # Persist the classification on both objects so a call-phase failure is
+        # still present in the canonical XML after teardown.
+        _upsert_user_property(
+            item.user_properties, "failure_classification", classification
+        )
+        _upsert_user_property(
+            report.user_properties, "failure_classification", classification
+        )
     elif report.skipped and existing["status"] != "FAIL":
         existing["status"] = "SKIP"
         existing["failure_classification"] = "SKIPPED"
     elif report.when == "call" and existing["status"] not in ("FAIL", "SKIP"):
         existing["status"] = "PASS"
-        report.user_properties.append(("failure_classification", "NONE"))
+        _upsert_user_property(item.user_properties, "failure_classification", "NONE")
+        _upsert_user_property(report.user_properties, "failure_classification", "NONE")
 
 
 def _versions(spec_root: Path) -> dict[str, Any]:

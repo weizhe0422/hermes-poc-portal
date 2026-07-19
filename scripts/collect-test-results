@@ -329,9 +329,16 @@ def _metadata_errors(case: dict[str, Any]) -> list[str]:
                     f"{case['test_case_id']}: {field} must equal {expected!r}"
                 )
     if case["test_case_id"] in _ENGINE_EVIDENCE_CASES:
-        if case["engine_evidence"] != "PASS":
+        if case["engine_evidence"] not in {"PASS", "FAIL"}:
             errors.append(
-                f"{case['test_case_id']}: isolated Engine evidence is missing or failed"
+                f"{case['test_case_id']}: isolated Engine evidence is missing"
+            )
+        elif (
+            case["engine_evidence"] == "FAIL"
+            and case["execution_status"] != "FAILED"
+        ):
+            errors.append(
+                f"{case['test_case_id']}: failed Engine evidence lacks a JUnit failure"
             )
         expected_engine_file = f"evidence-{case['test_case_id']}.json"
         if case["engine_evidence_file"] != expected_engine_file:
@@ -728,16 +735,20 @@ def _artifact_errors(run_root: Path, cases: list[dict[str, Any]]) -> list[str]:
         runtime_008_context, runtime_008_context_error = _read_json_object(
             run_root / "controller-e2e/runtime-008/engine-context.json"
         )
+        runtime_008_engine_observation: str | None = None
         if runtime_008_context_error:
             errors.append(
                 "RUNTIME-008 Engine context is invalid: "
                 + runtime_008_context_error
             )
-        elif (
-            runtime_008_context.get("test_case_id") != "RUNTIME-008"
-            or runtime_008_context.get("winning_action") not in {"START", "STOP"}
-        ):
-            errors.append("RUNTIME-008 Engine context winner is invalid")
+        else:
+            (
+                runtime_008_engine_observation,
+                context_validation_error,
+            ) = _runtime_008_context_observation(runtime_008_context)
+            if context_validation_error:
+                errors.append(context_validation_error)
+        cases_by_id = {case["test_case_id"]: case for case in cases}
         for case_id in sorted(_ENGINE_EVIDENCE_CASES):
             evidence_path = snapshots / f"evidence-{case_id}.json"
             if not evidence_path.is_file():
@@ -749,13 +760,24 @@ def _artifact_errors(run_root: Path, cases: list[dict[str, Any]]) -> list[str]:
                 continue
             if evidence.get("test_case_id") != case_id:
                 errors.append(f"{case_id} Engine evidence Test Case ID is invalid")
-            if evidence.get("verdict") is not True:
-                errors.append(f"{case_id} Engine evidence verdict must equal True")
+            verdict = evidence.get("verdict")
+            if not isinstance(verdict, bool):
+                errors.append(f"{case_id} Engine evidence verdict is invalid")
+            else:
+                expected_junit_evidence = "PASS" if verdict else "FAIL"
+                case = cases_by_id.get(case_id)
+                if (
+                    case is not None
+                    and case.get("engine_evidence") != expected_junit_evidence
+                ):
+                    errors.append(
+                        f"{case_id} Engine evidence verdict disagrees with JUnit"
+                    )
             if (
                 case_id == "RUNTIME-008"
-                and runtime_008_context is not None
+                and runtime_008_engine_observation is not None
                 and evidence.get("winning_action")
-                != runtime_008_context.get("winning_action")
+                != runtime_008_engine_observation
             ):
                 errors.append(
                     "RUNTIME-008 Engine evidence winner differs from API context"
@@ -973,6 +995,92 @@ def _read_json_object(path: Path) -> tuple[dict[str, Any] | None, str | None]:
     return document, None
 
 
+def _runtime_008_context_observation(
+    context: dict[str, Any],
+) -> tuple[str | None, str | None]:
+    if context.get("test_case_id") != "RUNTIME-008":
+        return None, "RUNTIME-008 Engine context Test Case ID is invalid"
+
+    extended_fields = {
+        "accepted_actions",
+        "operation_actions",
+        "engine_observation",
+        "responses",
+    }
+    present_extended = extended_fields & set(context)
+    if not present_extended:
+        winner = context.get("winning_action")
+        if winner in {"START", "STOP"}:
+            return winner, None
+        return None, "RUNTIME-008 Engine context observation is invalid"
+    if present_extended != extended_fields:
+        return None, "RUNTIME-008 Engine context is missing raw observation fields"
+
+    accepted_actions = context.get("accepted_actions")
+    operation_actions = context.get("operation_actions")
+    responses = context.get("responses")
+    if not all(
+        isinstance(value, list)
+        for value in (accepted_actions, operation_actions, responses)
+    ):
+        return None, "RUNTIME-008 Engine context raw observations are invalid"
+    if len(responses) != 2:
+        return None, "RUNTIME-008 Engine context must contain two API responses"
+
+    response_actions: list[str] = []
+    computed_accepted: list[str] = []
+    computed_operations: list[str] = []
+    has_error = False
+    for response in responses:
+        if not isinstance(response, dict):
+            return None, "RUNTIME-008 Engine context response is invalid"
+        action = response.get("action")
+        status = response.get("http_status")
+        operation_action = response.get("operation_action")
+        error_class = response.get("error_class")
+        if action not in {"START", "STOP"} or action in response_actions:
+            return None, "RUNTIME-008 Engine context response actions are invalid"
+        response_actions.append(action)
+        if error_class is not None:
+            if not isinstance(error_class, str) or not error_class:
+                return None, "RUNTIME-008 Engine context response error is invalid"
+            if status is not None or operation_action is not None:
+                return None, "RUNTIME-008 Engine context error response is contradictory"
+            has_error = True
+            continue
+        if isinstance(status, bool) or not isinstance(status, int):
+            return None, "RUNTIME-008 Engine context response status is invalid"
+        if operation_action is not None and operation_action not in {"START", "STOP"}:
+            return None, "RUNTIME-008 Engine context operation action is invalid"
+        if status < 300:
+            computed_accepted.append(action)
+        if operation_action == action:
+            computed_operations.append(action)
+
+    if accepted_actions != computed_accepted or operation_actions != computed_operations:
+        return None, "RUNTIME-008 Engine context derived observations are inconsistent"
+    if has_error:
+        expected_observation = "UNRESOLVED"
+    elif len(computed_operations) == 1:
+        expected_observation = computed_operations[0]
+    elif not computed_operations and len(computed_accepted) == 1:
+        expected_observation = computed_accepted[0]
+    elif computed_operations:
+        expected_observation = "MULTIPLE"
+    else:
+        expected_observation = "NONE"
+    expected_winner = (
+        expected_observation
+        if expected_observation in {"START", "STOP"}
+        else None
+    )
+    if context.get("engine_observation") != expected_observation:
+        return None, "RUNTIME-008 Engine context observation is inconsistent"
+    if context.get("winning_action") != expected_winner:
+        return None, "RUNTIME-008 Engine context winner is inconsistent"
+    return expected_observation, None
+
+
 def _write_summary(run_root: Path, summary: dict[str, Any]) -> None:
     (run_root / "summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
@@ -1186,13 +1294,28 @@ def _child_evidence(
     summary, summary_error = _read_json_object(run_root / "summary.json")
     if summary_error:
         artifact_errors.append(f"{run_root.name}/summary.json: {summary_error}")
-    elif summary is not None and summary.get("status") not in {
-        "PASS",
-        "CONTRACT_BLOCKED",
-    }:
-        artifact_errors.append(
-            f"child {run_root.name} summary status must be PASS"
+    elif summary is not None:
+        hard_failure = bool(
+            parse_errors
+            or metadata_errors
+            or manifest_errors
+            or inventory_errors
+            or artifact_errors
+            or secret_findings
+            or any(case["status"] == "FAILED" for case in cases)
         )
+        expected_status = (
+            "FAIL"
+            if hard_failure
+            else "CONTRACT_BLOCKED"
+            if any(case["status"] == "BLOCKED_BY_CONTRACT" for case in cases)
+            else "PASS"
+        )
+        if summary.get("status") != expected_status:
+            artifact_errors.append(
+                f"child {run_root.name} summary status must equal "
+                f"{expected_status!r}"
+            )
     return (
         manifest,
         case_entries,
