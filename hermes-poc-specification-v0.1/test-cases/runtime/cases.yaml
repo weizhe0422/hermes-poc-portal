@@ -144,7 +144,7 @@ cases:
   expected:
     initial_http_status: 202
     final_state: ERROR
-    error_code: RUNTIME_START_TIMEOUT
+    last_error_code: RUNTIME_START_TIMEOUT
   verdict_mode: AUTOMATED
 - case_id: RUNTIME-012
   purpose: 未受管Container不得被停止。
