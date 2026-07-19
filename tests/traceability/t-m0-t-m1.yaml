@@ -138,7 +138,7 @@ contract_ambiguities:
     detail: Runtime state machine defines Start/Stop idempotency but no Restart idempotent response.
   - requirement_ids: [RT-03, RT-05]
     topic: Accepted response state
-    detail: Runtime YAML freezes the accepted HTTP status and final state but does not require the 202 AgentInstance snapshot to remain STARTING or STOPPING; OpenAPI only binds it to the AgentInstance schema.
+    detail: RUNTIME-003 YAML freezes the accepted HTTP status, RUNTIME-014 gets 202 from OpenAPI, and neither requires the 202 AgentInstance snapshot to remain STARTING or STOPPING; the Runner therefore enforces the schema and an action-specific ordered reachable path rather than one snapshot state.
   - requirement_ids: [RT-01, RT-02]
     topic: Instance Registry configuration
     detail: Bundle freezes DEFAULT_INSTANCE_ID but not a multi-instance registry file/schema; RUNTIME-014 therefore runs in a separate Controller phase.

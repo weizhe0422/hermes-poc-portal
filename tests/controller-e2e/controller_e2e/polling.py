@@ -20,6 +20,30 @@ class PollResult(Generic[T]):
     elapsed_seconds: float
 
 
+class OrderedStatePath:
+    """Reject non-contract states and backwards transitions in an async path."""
+
+    def __init__(self, states: tuple[str, ...]) -> None:
+        if not states or len(set(states)) != len(states):
+            raise ValueError("ordered state path must contain unique states")
+        self._rank = {state: index for index, state in enumerate(states)}
+        self._last_rank = -1
+        self._last_state: str | None = None
+
+    def observe(self, state: object, description: str) -> None:
+        if not isinstance(state, str) or state not in self._rank:
+            raise ExpectedResultMismatch(
+                f"{description} observed unreachable state={state!r}"
+            )
+        rank = self._rank[state]
+        if rank < self._last_rank:
+            raise ExpectedResultMismatch(
+                f"{description} regressed from {self._last_state!r} to {state!r}"
+            )
+        self._last_rank = rank
+        self._last_state = state
+
+
 class BoundedPoller(Generic[T]):
     def __init__(
         self,

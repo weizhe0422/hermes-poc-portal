@@ -1,4 +1,4 @@
-from controller_e2e.polling import BoundedPoller
+from controller_e2e.polling import BoundedPoller, OrderedStatePath
 from controller_e2e.errors import ExpectedResultMismatch
 
 import pytest
@@ -85,3 +85,28 @@ def test_polling_rejects_a_success_observed_after_the_deadline():
 
 def test_bounded_poller_supports_runtime_type_parameters() -> None:
     assert BoundedPoller[int] is not None
+
+
+def test_ordered_state_path_allows_repeats_and_skipped_intermediate_states() -> None:
+    path = OrderedStatePath(("STOPPING", "STOPPED", "STARTING", "HEALTHY"))
+
+    path.observe("STOPPING", "restart")
+    path.observe("STOPPING", "restart")
+    path.observe("STARTING", "restart")
+    path.observe("HEALTHY", "restart")
+
+
+@pytest.mark.parametrize("state", ["NOT_PROVISIONED", "ERROR", None])
+def test_ordered_state_path_rejects_unreachable_states(state: object) -> None:
+    path = OrderedStatePath(("STARTING", "UNHEALTHY", "HEALTHY"))
+
+    with pytest.raises(ExpectedResultMismatch, match="unreachable state"):
+        path.observe(state, "start")
+
+
+def test_ordered_state_path_rejects_backwards_transition() -> None:
+    path = OrderedStatePath(("STOPPING", "STOPPED", "STARTING", "HEALTHY"))
+    path.observe("STARTING", "restart")
+
+    with pytest.raises(ExpectedResultMismatch, match="regressed"):
+        path.observe("STOPPING", "restart")

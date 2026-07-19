@@ -28,12 +28,22 @@ def _write_junit(
         "run_id": run_root.name,
         "fixture_type": "SYNTHETIC",
         "spec_version": "0.1.0",
-        "git_commit": "0123456789abcdef",
+        "git_commit": "0123456789abcdef0123456789abcdef01234567",
         "git_branch": "test/t-m0-m1",
         "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
         "test_suite": "controller-e2e",
-        "images": {"controller_e2e": "example.invalid/controller-e2e:0.1.0"},
-        "image_ids": {"controller_e2e": f"sha256:{'a' * 64}"},
+        "images": {
+            "controller": "example.invalid/controller:candidate",
+            "controller_e2e": "example.invalid/controller-e2e:0.1.0",
+            "docker_engine_test": "example.invalid/docker-engine:test",
+            "hermes_fixture": "example.invalid/hermes-fixture:0.1.0",
+        },
+        "image_ids": {
+            "controller": f"sha256:{'a' * 64}",
+            "controller_e2e": f"sha256:{'b' * 64}",
+            "docker_engine_test": f"sha256:{'c' * 64}",
+            "hermes_fixture": f"sha256:{'d' * 64}",
+        },
         "executed_at": "2026-07-18T00:00:00Z",
     }
     (run_root / "manifest.yaml").write_text(
@@ -142,12 +152,18 @@ def _write_portal_junit(run_root: Path) -> None:
         "run_id": run_root.name,
         "fixture_type": "SYNTHETIC",
         "spec_version": "0.1.0",
-        "git_commit": "0123456789abcdef",
+        "git_commit": "0123456789abcdef0123456789abcdef01234567",
         "git_branch": "test/t-m0-m1",
         "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
         "test_suite": "portal-e2e",
-        "images": {"portal_e2e": "example.invalid/portal-e2e:0.1.0"},
-        "image_ids": {"portal_e2e": f"sha256:{'b' * 64}"},
+        "images": {
+            "portal": "example.invalid/portal:candidate",
+            "portal_e2e": "example.invalid/portal-e2e:0.1.0",
+        },
+        "image_ids": {
+            "portal": f"sha256:{'a' * 64}",
+            "portal_e2e": f"sha256:{'b' * 64}",
+        },
         "executed_at": "2026-07-18T00:00:00Z",
     }
     (run_root / "manifest.yaml").write_text(json.dumps(manifest), encoding="utf-8")
@@ -353,7 +369,7 @@ def test_collector_requires_image_ids_for_every_image(tmp_path: Path) -> None:
     _write_junit(run_root)
     manifest_path = run_root / "manifest.yaml"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-    manifest["images"]["controller"] = "example.invalid/controller:candidate"
+    manifest["image_ids"].pop("controller")
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     completed = _run_collector(tmp_path, run_root.name)
@@ -362,6 +378,25 @@ def test_collector_requires_image_ids_for_every_image(tmp_path: Path) -> None:
     summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
     assert summary["manifest_errors"] == [
         "manifest.image_ids keys must match manifest.images keys"
+    ]
+
+
+def test_collector_requires_suite_specific_product_image_role(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-no-product-image"
+    _write_junit(run_root)
+    manifest_path = run_root / "manifest.yaml"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["images"].pop("controller")
+    manifest["image_ids"].pop("controller")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["manifest_errors"] == [
+        "manifest.images roles must equal "
+        "controller,controller_e2e,docker_engine_test,hermes_fixture"
     ]
 
 

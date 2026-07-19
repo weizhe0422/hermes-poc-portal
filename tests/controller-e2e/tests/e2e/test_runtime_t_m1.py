@@ -15,7 +15,7 @@ from controller_e2e.errors import (
     ExpectedResultMismatch,
     require_equal,
 )
-from controller_e2e.polling import BoundedPoller
+from controller_e2e.polling import BoundedPoller, OrderedStatePath
 
 
 def _instance_response(
@@ -39,7 +39,7 @@ def _wait_for_state(
     instance_id: str,
     expected_state: str,
     timeout_seconds: float,
-    allowed_intermediate_states: frozenset[str],
+    state_path: OrderedStatePath,
 ) -> dict[str, Any]:
     def fetch() -> dict[str, Any]:
         response = client.get_instance(instance_id)
@@ -56,6 +56,8 @@ def _wait_for_state(
             instance_id,
             f"poll {instance_id} instance_id",
         )
+        if instance.get("state") != "ERROR":
+            state_path.observe(instance.get("state"), f"poll {instance_id}")
         return instance
 
     def terminal_failure(instance: dict[str, Any]) -> str | None:
@@ -67,8 +69,6 @@ def _wait_for_state(
                 f"state={state}, "
                 f"last_error_code={instance.get('last_error_code')}"
             )
-        if state != expected_state and state not in allowed_intermediate_states:
-            return f"illegal intermediate state={state!r}"
         return None
 
     result = poller.until(
@@ -137,14 +137,17 @@ def test_runtime_003_starts_stopped_instance_to_healthy(
     )
     # The Bundle freezes the 202 status and final HEALTHY state, but does not
     # bind the AgentInstance snapshot in the accepted response to STARTING.
-    # OpenAPI schema validation above still rejects every non-contract state.
+    # OpenAPI schema validation and this ordered reachable path still reject
+    # non-contract states or backwards transitions.
+    start_path = OrderedStatePath(("STARTING", "UNHEALTHY", "HEALTHY"))
+    start_path.observe(accepted_instance.get("state"), "RUNTIME-003 accepted response")
     final = _wait_for_state(
         controller_client,
         poller,
         instance_id,
         runtime_case.expected["final_state"],
         runner_config.start_deadline_seconds,
-        frozenset({"STARTING", "UNHEALTHY"}),
+        start_path,
     )
     require_equal(
         final["hermes_status"],
@@ -261,12 +264,18 @@ def test_runtime_014_restart_preserves_marker_gated_fixture(
     # The 202 response body is schema-bound, while the Bundle freezes only the
     # final HEALTHY state. The bounded observations and Engine events below
     # prove the Restart transition without inventing an accepted-body state.
+    restart_path = OrderedStatePath(
+        ("STOPPING", "STOPPED", "STARTING", "UNHEALTHY", "HEALTHY")
+    )
+    restart_path.observe(
+        accepted_instance.get("state"), "RUNTIME-014 accepted response"
+    )
     final = _wait_for_state(
         controller_client,
         poller,
         instance_id,
         runtime_case.expected["final_state"],
         runner_config.restart_deadline_seconds,
-        frozenset({"STOPPING", "STOPPED", "STARTING", "UNHEALTHY"}),
+        restart_path,
     )
     contracts.assert_healthy_contract(final)

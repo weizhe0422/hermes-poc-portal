@@ -24,8 +24,8 @@
     },
     "fixture_type": {"const": "SYNTHETIC"},
     "spec_version": {"const": "0.1.0"},
-    "git_commit": {"type": "string", "minLength": 7},
-    "git_branch": {"type": "string", "minLength": 1},
+    "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "git_branch": {"const": "test/t-m0-m1"},
     "platform_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "test_suite": {"type": "string", "enum": ["controller-e2e", "portal-e2e"]},
     "images": {

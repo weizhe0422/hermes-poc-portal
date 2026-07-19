@@ -109,7 +109,9 @@ portal-e2e/
 
 `manifest.yaml` 同時記錄測試 Commit、40 字元 Platform candidate Commit、所有
 image tag 與執行當下不可變的 `sha256` image ID；正式 product run 缺少
-`PLATFORM_COMMIT` 時會在建立 acceptance artifact 前 fail closed。
+`PLATFORM_COMMIT`，或 production image 的 `org.opencontainers.image.revision`
+label 與該 Commit 不相等時，會在建立 acceptance artifact 前 fail closed。Controller
+manifest 也記錄隔離 Docker Engine image。
 
 `scripts/collect-test-results <run-id>` 將各 Runner 的 JUnit 複製至 canonical
 `junit/`、產生機器可讀 `summary.json` 與人工摘要 `summary.md`，並在以下任一情況以
@@ -142,9 +144,10 @@ Bundle 內 Control Wafer、Deployment knowledge、SVG 與 verified skill Fixture
   Controller 滿足此前置條件。
 - RT-06 提到 Restart idempotency，但 Runtime state machine 沒有 Restart idempotent
   response；列為 `CONTRACT_AMBIGUITY`，不以 Start 案例代替。
-- Runtime YAML 只凍結 RUNTIME-003/RUNTIME-014 的 accepted HTTP status 與最終狀態，
-  沒有規定 202 AgentInstance snapshot 必須仍為 `STARTING`/`STOPPING`；Runner 驗
-  schema、合法觀察路徑、最終狀態及 Engine events，不自行增加 accepted-body Expected。
+- RUNTIME-003 YAML 凍結 accepted HTTP status；RUNTIME-014 的 202 來自 OpenAPI；
+  兩者都沒有規定 202 AgentInstance snapshot 必須仍為 `STARTING`/`STOPPING`。
+  Runner 仍驗 schema、action-specific 有序可達路徑、最終狀態及 Engine events，
+  不自行增加 accepted-body Expected。
 - Instance Registry 的資料格式/載入 Contract 未凍結；Harness 只使用目前已定義的
   `DEFAULT_INSTANCE_ID` 單一 Instance 介面，不假設未發布的 registry schema。
 - OD-03 尚未選定核准 LLM probe protocol；`RUNTIME-003` 會驗證 Contract schema 與
