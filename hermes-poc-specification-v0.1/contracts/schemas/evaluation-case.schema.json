@@ -18,7 +18,7 @@
   "properties": {
     "case_id": {"type": "string", "minLength": 1},
     "purpose": {"type": "string", "minLength": 1},
-    "scenario": {"type": "string", "enum": ["RUNTIME", "CONTROL_WAFER_KNOWLEDGE", "DEPLOYMENT_CHECK", "SECURITY"]},
+    "scenario": {"type": "string", "enum": ["RUNTIME", "CONTROL_WAFER_KNOWLEDGE", "DEPLOYMENT_CHECK", "SECURITY", "BUILD", "TEST_EXECUTION", "ARTIFACT"]},
     "requirement_ids": {"type": "array", "minItems": 1, "items": {"type": "string"}},
     "critical": {"type": "boolean"},
     "preconditions": {"type": "array", "items": {"type": "string"}},

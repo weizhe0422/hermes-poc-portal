@@ -4,9 +4,9 @@
 >
 > 適用角色：需求負責人、平台實作者、測試實作者、審查者。
 >
-> 文件狀態：Draft v0.1；實作開始後須持續更新實際檔案與Test ID。
+> 文件狀態：整體Spec仍為Draft v0.1.0，但M0/M1 Contract子集合已Frozen為v0.2.0。Frozen M0/M1 Contract若要修改，必須提出Change Request、更新版本並重跑受影響測試。Future Draft Contract可以調整，但不得暗中改變Frozen M0/M1語意。
 
-本表中的`RUNTIME-*`、`CW-*`與`DEPLOY-*`已有YAML案例；`PORTAL-*`、`EVAL-*`、`BUILD-*`、`SECURITY-*`等為測試實作者須依Contract落實的預定Test ID，尚未存在時不得誤標為已通過。
+本表中的`RUNTIME-*`、`SECURITY-001~003`、`EXECUTION-*`、`ARTIFACT-*`、`CONTROLLER-ENV-001`、`CW-*`與`DEPLOY-*`已有YAML案例；`PORTAL-*`、`EVAL-*`、`BUILD-*`等為測試實作者須依Contract落實的預定Test ID。
 
 | Requirement | Contract | 實作責任 | Test Case |
 |---|---|---|---|
@@ -14,7 +14,7 @@
 | RT-03 | Controller Start API、UI `runtime-start` | Controller＋Portal | RUNTIME-003、PORTAL-RT-003 |
 | RT-04 | Controller Stop API、UI `runtime-stop` | Controller＋Portal | RUNTIME-004 |
 | RT-05 | Controller Restart API、UI `runtime-restart` | Controller＋Portal | RUNTIME-005 |
-| RT-06 | Runtime State Machine idempotency | Controller | RUNTIME-006、007 |
+| RT-06 | Runtime State Machine idempotency | Controller | RUNTIME-006、007、017 |
 | RT-07 | Error `OPERATION_CONFLICT` | Controller | RUNTIME-008 |
 | RT-08 | Error `RUNTIME_START_TIMEOUT` | Controller | RUNTIME-009 |
 | RT-09 | AgentInstance health fields | Controller | RUNTIME-010、011 |
@@ -40,7 +40,7 @@
 | E2E-03、04 | Controller E2E Compose Contract | Controller E2E | CONTROLLER-ENV-001 |
 | E2E-05～08 | Build/Test Guide | Test Runners | EXECUTION-001～004 |
 | NF-01～03 | Security Guide | 全部元件 | SECURITY-004～008 |
-| NF-04、05 | Architecture＋Task Schema | Portal／Hermes | PERSIST-001、002 |
+| NF-04、05 | Architecture＋Task Schema | Portal／Hermes | PERSIST-001、002 (DEFERRED_BY_MILESTONE: P-M3) |
 | NF-06～08 | Environment Contract | Portal／Hermes | PERF-001～003 |
 | NF-09～11 | Environment＋Schemas | 全部元件 | CONFIG-001、INSTANCE-001 |
 | NF-12 | UI Contract | Portal | UAT-001 |

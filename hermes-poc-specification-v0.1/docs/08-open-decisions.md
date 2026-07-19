@@ -4,13 +4,13 @@
 >
 > 適用角色：需求負責人、環境管理者、領域專家、技術負責人。
 >
-> 文件狀態：Open；標記Blocker的項目需在對應里程碑前決定。
+> 文件狀態：整體Spec仍為Draft v0.1.0，但M0/M1 Contract子集合已Frozen為v0.2.0。Frozen M0/M1 Contract若要修改，必須提出Change Request、更新版本並重跑受影響測試。Future Draft Contract可以調整，但不得暗中改變Frozen M0/M1語意。
 
 | ID | 問題 | 建議預設 | Owner | 截止點 | 狀態 |
 |---|---|---|---|---|---|
 | OD-01 | 實際Hermes Image Tag/Digest為何？ | 使用目前已驗證Image並鎖Digest | Environment | M0 | Blocker |
 | OD-02 | Hermes任務API與Health API精確路徑？ | 以Adapter配置，不寫死 | Platform | M1 | Blocker |
-| OD-03 | Hermes是否提供直接LLM Probe？ | 無則以最小非敏感請求Probe | Platform | M1 | Open |
+| OD-03 | Hermes是否提供直接LLM Probe？ | Synthetic Probe只能驗證介面，不能取代Live Hermes Probe，實作不得自行猜測Live Endpoint。 | Platform | M1 | Blocker |
 | OD-04 | 內部LLM Base URL、模型名及Context？ | 由Secret/Env注入 | Environment | M1 | Blocker |
 | OD-05 | Host OS與Docker Engine/Compose版本？ | 記入Version Manifest | Environment | M0 | Blocker |
 | OD-06 | 內部Registry位址及可用Base Image？ | Node 24/Python 3.13/Playwright Mirror | Environment | M0 | Blocker |
