@@ -5,11 +5,12 @@
 openapi: 3.1.0
 info:
   title: Hermes Runtime Controller API
-  version: 0.1.0
+  version: 0.2.0
   license:
     name: Internal PoC - not for redistribution
   description: >-
     僅供Docker內部Network使用。所有Lifecycle操作均須驗證Instance Registry、Container Name與Managed Label。
+    狀態：整體Spec仍為Draft v0.1.0，但M0/M1 Contract子集合已Frozen為v0.2.0。Frozen M0/M1 Contract若要修改，必須提出Change Request、更新版本並重跑受影響測試。Future Draft Contract可以調整，但不得暗中改變Frozen M0/M1語意。
 servers:
   - url: http://controller:8090
 security: []
@@ -95,7 +96,17 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "../schemas/agent-instance.schema.json"
+                allOf:
+                  - $ref: "../schemas/agent-instance.schema.json"
+                  - type: object
+                    properties:
+                      state: {const: STARTING}
+                      operation:
+                        type: object
+                        properties:
+                          action: {const: START}
+                        required: [action]
+                    required: [state, operation]
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -123,7 +134,17 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "../schemas/agent-instance.schema.json"
+                allOf:
+                  - $ref: "../schemas/agent-instance.schema.json"
+                  - type: object
+                    properties:
+                      state: {const: STOPPING}
+                      operation:
+                        type: object
+                        properties:
+                          action: {const: STOP}
+                        required: [action]
+                    required: [state, operation]
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -141,11 +162,21 @@ paths:
         - $ref: "#/components/parameters/InstanceId"
       responses:
         "202":
-          description: Restart已接受。
+          description: Restart已接受或相同Restart仍執行中。
           content:
             application/json:
               schema:
-                $ref: "../schemas/agent-instance.schema.json"
+                allOf:
+                  - $ref: "../schemas/agent-instance.schema.json"
+                  - type: object
+                    properties:
+                      state: {enum: [STOPPING, STARTING]}
+                      operation:
+                        type: object
+                        properties:
+                          action: {const: RESTART}
+                        required: [action]
+                    required: [state, operation]
         "403":
           $ref: "#/components/responses/Forbidden"
         "404":
@@ -224,7 +255,7 @@ components:
           schema:
             $ref: "../schemas/error-response.schema.json"
     Conflict:
-      description: Lifecycle狀態或操作衝突。
+      description: 進行中的不同操作衝突 (OPERATION_CONFLICT) 或 終態不允許的操作 (INVALID_STATE_TRANSITION)。
       content:
         application/json:
           schema:
