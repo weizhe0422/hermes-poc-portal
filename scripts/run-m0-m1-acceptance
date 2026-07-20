@@ -10,6 +10,9 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(dirname "$script_dir")
 cd "$repo_root"
 
+# The master guard must fail before child runners or artifact paths are touched.
+"$repo_root/scripts/verify-acceptance-source" >/dev/null
+
 master_run_id=${RUN_ID:-"$(date -u +%Y%m%dt%H%M%Sz)-$$"}
 case "$master_run_id" in
   ''|*[!a-z0-9_-]*|[!a-z0-9]*|*[!a-z0-9])

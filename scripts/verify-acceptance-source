@@ -1,0 +1,386 @@
+#!/usr/bin/env python3
+"""Fail-closed source provenance guard for M0/M1 acceptance."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+from typing import Any
+
+
+EXIT_PREFLIGHT = 70
+SHA1 = re.compile(r"^[0-9a-f]{40}$")
+FROZEN_CONTRACT_TAG = "contract-m0-m1-v0.2.1"
+
+FROZEN_PATHS = (
+    ".DS_Store",
+    "hermes-poc-specification-v0.1",
+)
+PLATFORM_OWNED_PATHS = (
+    ".dockerignore",
+    ".env.example",
+    ".gitignore",
+    "compose.yaml",
+    "portal",
+    "controller",
+    "scripts/build-all",
+    "scripts/dev-smoke-controller",
+    "scripts/run-unit-tests",
+)
+TEST_OWNED_PATHS = (
+    "README.md",
+    "compose.e2e.controller.yaml",
+    "compose.e2e.portal.yaml",
+    "tests",
+    "scripts/apply-controller-engine-evidence",
+    "scripts/bootstrap-controller-e2e-engine",
+    "scripts/cleanup-controller-e2e-engine",
+    "scripts/collect-controller-e2e-engine",
+    "scripts/collect-controller-environment-evidence",
+    "scripts/collect-portal-infrastructure-evidence",
+    "scripts/collect-test-results",
+    "scripts/finalize-infrastructure-evidence",
+    "scripts/prepare-controller-e2e-engine",
+    "scripts/run-controller-e2e",
+    "scripts/run-m0-m1-acceptance",
+    "scripts/run-portal-e2e",
+    "scripts/verify-acceptance-source",
+    "scripts/verify-controller-e2e-engine",
+)
+GIT_PROVENANCE_ENVIRONMENT = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_NOSYSTEM",
+    "GIT_CONFIG_PARAMETERS",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_DIR",
+    "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+    "GIT_INDEX_FILE",
+    "GIT_INTERNAL_SUPER_PREFIX",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PREFIX",
+    "GIT_QUARANTINE_PATH",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_SHALLOW_FILE",
+    "GIT_WORK_TREE",
+)
+
+
+class GuardFailure(RuntimeError):
+    """A source candidate failed a formal acceptance precondition."""
+
+
+def _git_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    for name in GIT_PROVENANCE_ENVIRONMENT:
+        environment.pop(name, None)
+    for name in tuple(environment):
+        if name.startswith(("GIT_CONFIG_KEY_", "GIT_CONFIG_VALUE_")):
+            environment.pop(name)
+    environment.update(
+        {
+            "GIT_NO_REPLACE_OBJECTS": "1",
+            "GIT_OPTIONAL_LOCKS": "0",
+            "LC_ALL": "C",
+        }
+    )
+    return environment
+
+
+def _git(
+    repository: Path,
+    *arguments: str,
+    allowed_returncodes: tuple[int, ...] = (0,),
+) -> subprocess.CompletedProcess[str]:
+    completed = subprocess.run(
+        ["git", *arguments],
+        cwd=repository,
+        env=_git_environment(),
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if completed.returncode not in allowed_returncodes:
+        detail = completed.stderr.strip() or completed.stdout.strip() or "git command failed"
+        raise GuardFailure(f"git {' '.join(arguments)}: {detail}")
+    return completed
+
+
+def _required_commit(name: str) -> str:
+    value = os.environ.get(name, "")
+    if not SHA1.fullmatch(value):
+        raise GuardFailure(f"{name} must be one full 40-character lowercase commit")
+    return value
+
+
+def _require_commit_object(repository: Path, name: str, value: str) -> None:
+    object_type = _git(repository, "cat-file", "-t", value).stdout.strip()
+    if object_type != "commit":
+        raise GuardFailure(f"{name} must identify a commit object, received {object_type!r}")
+
+
+def _normalized_remote_ref(repository: Path) -> tuple[str, str]:
+    supplied = os.environ.get("EXPECTED_INTEGRATION_REF", "")
+    if supplied.startswith("origin/"):
+        remote_ref = "refs/heads/" + supplied.removeprefix("origin/")
+    elif supplied.startswith("refs/heads/"):
+        remote_ref = supplied
+    else:
+        raise GuardFailure(
+            "EXPECTED_INTEGRATION_REF must be origin/<branch> or refs/heads/<branch>"
+        )
+    _git(repository, "check-ref-format", remote_ref)
+    return supplied, remote_ref
+
+
+def _remote_observation(
+    repository: Path, remote_ref: str, integration_commit: str
+) -> str:
+    completed = _git(
+        repository,
+        "ls-remote",
+        "--exit-code",
+        "--refs",
+        "origin",
+        remote_ref,
+    )
+    rows = [line for line in completed.stdout.splitlines() if line.strip()]
+    if len(rows) != 1:
+        raise GuardFailure(
+            f"origin {remote_ref} must resolve to exactly one row, received {len(rows)}"
+        )
+    fields = rows[0].split()
+    if len(fields) != 2 or fields[1] != remote_ref:
+        raise GuardFailure(f"origin returned an invalid observation for {remote_ref}")
+    if fields[0] != integration_commit:
+        raise GuardFailure(
+            f"origin {remote_ref} is {fields[0]}, expected {integration_commit}"
+        )
+    return fields[0]
+
+
+def _require_ancestor(
+    repository: Path, name: str, candidate: str, integration_commit: str
+) -> None:
+    completed = _git(
+        repository,
+        "merge-base",
+        "--is-ancestor",
+        candidate,
+        integration_commit,
+        allowed_returncodes=(0, 1),
+    )
+    if completed.returncode != 0:
+        raise GuardFailure(f"{name} is not an ancestor of EXPECTED_INTEGRATION_COMMIT")
+
+
+def _require_equal_paths(
+    repository: Path,
+    name: str,
+    candidate: str,
+    integration_commit: str,
+    paths: tuple[str, ...],
+) -> None:
+    completed = _git(
+        repository,
+        "diff",
+        "--quiet",
+        "--no-ext-diff",
+        "--no-textconv",
+        candidate,
+        integration_commit,
+        "--",
+        *paths,
+        allowed_returncodes=(0, 1),
+    )
+    if completed.returncode != 0:
+        raise GuardFailure(f"{name} differs from its approved candidate tree")
+
+
+def _source_inventory(repository: Path) -> tuple[list[dict[str, Any]], str]:
+    completed = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "--full-tree", "HEAD"],
+        cwd=repository,
+        env=_git_environment(),
+        check=False,
+        capture_output=True,
+    )
+    if completed.returncode != 0:
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise GuardFailure(f"git ls-tree failed: {detail or 'unknown error'}")
+
+    inventory: list[dict[str, Any]] = []
+    for raw_record in completed.stdout.split(b"\0"):
+        if not raw_record:
+            continue
+        metadata, separator, raw_path = raw_record.partition(b"\t")
+        fields = metadata.decode("ascii").split()
+        if not separator or len(fields) != 3:
+            raise GuardFailure("git ls-tree returned an invalid source inventory row")
+        mode, object_type, object_id = fields
+        inventory.append(
+            {
+                "mode": mode,
+                "type": object_type,
+                "object_id": object_id,
+                "path": raw_path.decode("utf-8", errors="surrogateescape"),
+            }
+        )
+    return inventory, hashlib.sha256(completed.stdout).hexdigest()
+
+
+def _require_all_paths_owned(inventory: list[dict[str, Any]]) -> None:
+    owned_paths = (*FROZEN_PATHS, *PLATFORM_OWNED_PATHS, *TEST_OWNED_PATHS)
+    for record in inventory:
+        path = record["path"]
+        if not any(path == owner or path.startswith(owner + "/") for owner in owned_paths):
+            raise GuardFailure(f"tracked path has no approved owner: {path}")
+
+
+def _require_materialized_checkout(repository: Path) -> None:
+    sparse = _git(
+        repository,
+        "config",
+        "--bool",
+        "core.sparseCheckout",
+        allowed_returncodes=(0, 1),
+    )
+    if sparse.returncode == 0 and sparse.stdout.strip() == "true":
+        raise GuardFailure("sparse checkout is not allowed for acceptance")
+
+    index_flags = _git(repository, "ls-files", "-v").stdout.splitlines()
+    exceptional = [row for row in index_flags if row and (row[0] == "S" or row[0].islower())]
+    if exceptional:
+        raise GuardFailure("skip-worktree or assume-unchanged index flags are not allowed")
+
+
+def _verify(repository: Path) -> dict[str, Any]:
+    integration_commit = _required_commit("EXPECTED_INTEGRATION_COMMIT")
+    platform_commit = _required_commit("PLATFORM_COMMIT")
+    test_commit = _required_commit("TEST_COMMIT")
+    contract_commit = _required_commit("EXPECTED_CONTRACT_COMMIT")
+    contract_tag = os.environ.get("CONTRACT_TAG", "")
+    if contract_tag != FROZEN_CONTRACT_TAG:
+        raise GuardFailure(f"CONTRACT_TAG must equal {FROZEN_CONTRACT_TAG}")
+
+    for name, value in (
+        ("EXPECTED_INTEGRATION_COMMIT", integration_commit),
+        ("PLATFORM_COMMIT", platform_commit),
+        ("TEST_COMMIT", test_commit),
+        ("EXPECTED_CONTRACT_COMMIT", contract_commit),
+    ):
+        _require_commit_object(repository, name, value)
+
+    head = _git(repository, "rev-parse", "HEAD").stdout.strip()
+    if head != integration_commit:
+        raise GuardFailure(f"HEAD is {head}, expected {integration_commit}")
+
+    supplied_ref, remote_ref = _normalized_remote_ref(repository)
+    remote_ref_commit = _remote_observation(repository, remote_ref, integration_commit)
+
+    for name, candidate in (
+        ("EXPECTED_CONTRACT_COMMIT", contract_commit),
+        ("PLATFORM_COMMIT", platform_commit),
+        ("TEST_COMMIT", test_commit),
+    ):
+        _require_ancestor(repository, name, candidate, integration_commit)
+
+    contract_ref = f"refs/tags/{contract_tag}"
+    peeled_contract = _git(
+        repository, "rev-parse", "--verify", f"{contract_ref}^{{commit}}"
+    ).stdout.strip()
+    if peeled_contract != contract_commit:
+        raise GuardFailure(
+            f"{contract_tag} peels to {peeled_contract}, expected {contract_commit}"
+        )
+
+    _require_equal_paths(
+        repository,
+        "Frozen Contract/Expected tree",
+        contract_ref,
+        integration_commit,
+        FROZEN_PATHS,
+    )
+    _require_equal_paths(
+        repository,
+        "Platform-owned tree",
+        platform_commit,
+        integration_commit,
+        PLATFORM_OWNED_PATHS,
+    )
+    _require_equal_paths(
+        repository,
+        "tests/hermes-fixture tree",
+        test_commit,
+        integration_commit,
+        ("tests/hermes-fixture",),
+    )
+    _require_equal_paths(
+        repository, "Test-owned tree", test_commit, integration_commit, TEST_OWNED_PATHS
+    )
+
+    _require_materialized_checkout(repository)
+
+    status_output = _git(
+        repository, "status", "--porcelain=v1", "--untracked-files=all"
+    ).stdout
+    if status_output:
+        raise GuardFailure("source tree must be clean before acceptance")
+
+    symbolic = _git(
+        repository,
+        "symbolic-ref",
+        "--quiet",
+        "--short",
+        "HEAD",
+        allowed_returncodes=(0, 1),
+    )
+    branch = symbolic.stdout.strip() if symbolic.returncode == 0 else None
+    checkout_mode = "BRANCH" if branch is not None else "DETACHED"
+    head_tree = _git(repository, "rev-parse", "HEAD^{tree}").stdout.strip()
+    inventory, inventory_sha256 = _source_inventory(repository)
+    _require_all_paths_owned(inventory)
+
+    return {
+        "schema_version": "1.0.0",
+        "head": head,
+        "head_tree": head_tree,
+        "checkout_mode": checkout_mode,
+        "git_branch": branch,
+        "integration_ref": supplied_ref,
+        "remote_ref": remote_ref,
+        "remote_ref_commit": remote_ref_commit,
+        "platform_commit": platform_commit,
+        "test_commit": test_commit,
+        "contract_tag": contract_tag,
+        "contract_commit": contract_commit,
+        "git_status": "",
+        "source_inventory": inventory,
+        "source_inventory_encoding": "git-ls-tree-r-z-full-tree-v1",
+        "source_inventory_sha256": inventory_sha256,
+    }
+
+
+def main() -> int:
+    repository = Path(__file__).resolve().parent.parent
+    try:
+        evidence = _verify(repository)
+    except (GuardFailure, OSError) as exc:
+        print(f"acceptance source guard failed: {exc}", file=sys.stderr)
+        return EXIT_PREFLIGHT
+    print(json.dumps(evidence, ensure_ascii=False, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

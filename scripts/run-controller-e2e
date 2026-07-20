@@ -15,15 +15,15 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_root=$(dirname "$script_dir")
 cd "$repo_root"
 
-branch=$(git branch --show-current)
-if [ "$branch" != "test/t-m0-m1" ]; then
-  echo "refusing to run from branch $branch; expected test/t-m0-m1" >&2
-  exit 70
-fi
-if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
-  echo "source tree must be clean before an E2E run" >&2
-  exit 70
-fi
+# This is the first stateful preflight. Keep it before Docker, builds, traps,
+# and acceptance artifact creation.
+source_evidence=$("$repo_root/scripts/verify-acceptance-source")
+integration_commit=$(printf '%s\n' "$source_evidence" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["head"])')
+source_head_tree=$(printf '%s\n' "$source_evidence" \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["head_tree"])')
+git_branch_json=$(printf '%s\n' "$source_evidence" \
+  | python3 -c 'import json, sys; print(json.dumps(json.load(sys.stdin)["git_branch"]))')
 if ! docker info >/dev/null 2>&1; then
   echo "Docker daemon is unavailable" >&2
   exit 70
@@ -180,12 +180,6 @@ if ! docker image inspect "$CONTROLLER_IMAGE" >/dev/null 2>&1; then
   echo "Controller image is unavailable: $CONTROLLER_IMAGE" >&2
   exit 70
 fi
-controller_revision=$(docker image inspect --format \
-  '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$CONTROLLER_IMAGE")
-if [ "$controller_revision" != "$platform_commit" ]; then
-  echo "Controller image revision does not match PLATFORM_COMMIT" >&2
-  exit 70
-fi
 if ! docker image inspect "$DOCKER_ENGINE_TEST_IMAGE" >/dev/null 2>&1; then
   docker pull "$DOCKER_ENGINE_TEST_IMAGE"
 fi
@@ -195,6 +189,7 @@ controller_e2e_image_id=$(docker image inspect --format '{{.Id}}' "$CONTROLLER_E
 fixture_image_id=$(docker image inspect --format '{{.Id}}' "$HERMES_FIXTURE_IMAGE")
 docker_engine_test_image_id=$(docker image inspect --format '{{.Id}}' "$DOCKER_ENGINE_TEST_IMAGE")
 
+printf '%s\n' "$source_evidence" > "$run_results/source-tree-before.json"
 cat > "$run_results/manifest.yaml" <<EOF
 {
   "run_id": "$run_id",
@@ -203,9 +198,10 @@ cat > "$run_results/manifest.yaml" <<EOF
   "contract_tag": "$contract_tag",
   "contract_commit": "$contract_commit",
   "contract_version": "$contract_version",
-  "git_commit": "$(git rev-parse HEAD)",
-  "git_branch": "$branch",
+  "git_commit": "$integration_commit",
+  "git_branch": $git_branch_json,
   "platform_commit": "$platform_commit",
+  "test_commit": "$TEST_COMMIT",
   "test_suite": "controller-e2e",
   "images": {
     "controller": "$CONTROLLER_IMAGE",
@@ -491,7 +487,9 @@ if ! python3 "$repo_root/scripts/finalize-infrastructure-evidence" controller \
 fi
 
 source_tree_unchanged=true
-if [ -n "$(git status --porcelain --untracked-files=normal)" ]; then
+if [ "$(git rev-parse HEAD)" != "$integration_commit" ] \
+  || [ "$(git rev-parse 'HEAD^{tree}')" != "$source_head_tree" ] \
+  || [ -n "$(git status --porcelain=v1 --untracked-files=all)" ]; then
   source_tree_unchanged=false
   evidence_status=1
 fi

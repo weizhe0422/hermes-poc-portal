@@ -89,6 +89,7 @@ does not create the required isolated Engine or Engine evidence.
 
 ```sh
 # Build Controller Runner and synthetic Fixture images only
+# (first export the six repository-level provenance variables documented in README.md)
 scripts/run-controller-e2e --build-only
 
 # Execute Controller Environment + 12 Runtime cases
@@ -99,10 +100,15 @@ CONTROLLER_IMAGE=<controller-candidate-image> \
 scripts/run-controller-e2e
 ```
 
-The entrypoint requires branch `test/t-m0-m1`, a clean source tree, Docker,
-tag `contract-m0-m1-v0.2.1`, Contract version `0.2.1`, and a candidate image
-whose OCI revision label equals `PLATFORM_COMMIT`. `--keep` is diagnostic only;
-because it intentionally prevents cleanup acceptance, it cannot produce PASS.
+Before any Docker/build/artifact action, the entrypoint requires
+`EXPECTED_INTEGRATION_COMMIT`, `EXPECTED_INTEGRATION_REF`, `PLATFORM_COMMIT`,
+`TEST_COMMIT`, `CONTRACT_TAG`, and `EXPECTED_CONTRACT_COMMIT`. The shared source
+guard verifies exact HEAD/remote observation, candidate ancestry, Contract and
+ownership trees, Fixture equality, and a clean working tree. Detached HEAD and
+a branch at the exact Integration commit are both valid; branch is evidence
+only. Image identity is the reference plus immutable image ID and does not
+depend on an OCI revision label. `--keep` is diagnostic only; because it
+intentionally prevents cleanup acceptance, it cannot produce PASS.
 
 Build context for the Runner image alone is `tests/controller-e2e`:
 
