@@ -10,11 +10,14 @@ import zipfile
 import xml.etree.ElementTree as ET
 
 from jsonschema import Draft202012Validator
+import pytest
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 COLLECTOR = REPO_ROOT / "scripts" / "collect-test-results"
 FROZEN_CONTRACT_COMMIT = "febdea906a51bab59e582755c495ed2253fb64b8"
+INTEGRATION_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+TEST_COMMIT = "5988c57e3533c570470181a244e3d2bffa0e963c"
 
 
 def _write_junit(
@@ -32,9 +35,10 @@ def _write_junit(
         "contract_tag": "contract-m0-m1-v0.2.1",
         "contract_commit": FROZEN_CONTRACT_COMMIT,
         "contract_version": "0.2.1",
-        "git_commit": "0123456789abcdef0123456789abcdef01234567",
-        "git_branch": "test/t-m0-m1",
+        "git_commit": INTEGRATION_COMMIT,
+        "git_branch": None,
         "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
+        "test_commit": TEST_COMMIT,
         "test_suite": "controller-e2e",
         "images": {
             "controller": "example.invalid/controller:candidate",
@@ -254,9 +258,10 @@ def _write_portal_junit(run_root: Path) -> None:
         "contract_tag": "contract-m0-m1-v0.2.1",
         "contract_commit": FROZEN_CONTRACT_COMMIT,
         "contract_version": "0.2.1",
-        "git_commit": "0123456789abcdef0123456789abcdef01234567",
-        "git_branch": "test/t-m0-m1",
+        "git_commit": INTEGRATION_COMMIT,
+        "git_branch": None,
         "platform_commit": "59a2df63c5cedb1a44cc7804004e5d228413434d",
+        "test_commit": TEST_COMMIT,
         "test_suite": "portal-e2e",
         "images": {
             "controller": "example.invalid/controller:candidate",
@@ -569,6 +574,9 @@ def test_master_collector_classifies_all_31_cases_without_not_evaluated(
         (REPO_ROOT / "tests/reporting/manifest.schema.json").read_text(encoding="utf-8")
     )
     Draft202012Validator(manifest_schema).validate(master_manifest)
+    assert master_manifest["git_commit"] == INTEGRATION_COMMIT
+    assert master_manifest["git_branch"] is None
+    assert master_manifest["test_commit"] == TEST_COMMIT
     assert summary["status"] == "PASS"
     assert summary["counts"] == {
         "total": 31,
@@ -626,6 +634,65 @@ def test_master_collector_rejects_shared_image_identity_drift(
     assert "child manifests disagree on image_ids.hermes_fixture" in summary[
         "manifest_errors"
     ]
+
+
+@pytest.mark.parametrize("field", ("git_commit", "test_commit"))
+def test_master_collector_rejects_child_candidate_identity_drift(
+    tmp_path: Path, field: str
+) -> None:
+    infrastructure_root = tmp_path / f"infra-{field}-child"
+    runtime_root = tmp_path / f"runtime-{field}-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 0
+    runtime_manifest_path = runtime_root / "manifest.yaml"
+    runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+    runtime_manifest[field] = "9" * 40
+    runtime_manifest_path.write_text(json.dumps(runtime_manifest), encoding="utf-8")
+
+    completed = _run_master_collector(
+        tmp_path,
+        f"m0-m1-{field}-drift",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 80
+    summary = json.loads(
+        (tmp_path / f"m0-m1-{field}-drift" / "summary.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert f"child manifests disagree on {field}" in summary["manifest_errors"]
+
+
+def test_master_collector_treats_child_branches_as_record_only(tmp_path: Path) -> None:
+    infrastructure_root = tmp_path / "infra-detached-child"
+    runtime_root = tmp_path / "runtime-attached-child"
+    _write_portal_junit(infrastructure_root)
+    _write_junit(runtime_root)
+    runtime_manifest_path = runtime_root / "manifest.yaml"
+    runtime_manifest = json.loads(runtime_manifest_path.read_text(encoding="utf-8"))
+    runtime_manifest["git_branch"] = "integration-local"
+    runtime_manifest_path.write_text(json.dumps(runtime_manifest), encoding="utf-8")
+    assert _run_collector(tmp_path, infrastructure_root.name).returncode == 0
+    assert _run_collector(tmp_path, runtime_root.name).returncode == 0
+
+    completed = _run_master_collector(
+        tmp_path,
+        "m0-m1-record-only-branch",
+        infrastructure_root.name,
+        runtime_root.name,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    master_manifest = json.loads(
+        (tmp_path / "m0-m1-record-only-branch/manifest.yaml").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert master_manifest["git_branch"] is None
 
 
 def test_master_collector_always_classifies_all_31_when_child_row_is_missing(
@@ -1041,6 +1108,78 @@ def test_manifest_schema_describes_frozen_contract_provenance(tmp_path: Path) ->
     )
 
     Draft202012Validator(manifest_schema).validate(manifest)
+
+
+def test_manifest_schema_accepts_an_attached_branch_record(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-attached-manifest"
+    _write_junit(run_root)
+    manifest_path = run_root / "manifest.yaml"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["git_branch"] = "integration-local"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    manifest_schema = json.loads(
+        (REPO_ROOT / "tests/reporting/manifest.schema.json").read_text(encoding="utf-8")
+    )
+
+    Draft202012Validator(manifest_schema).validate(manifest)
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 0, completed.stderr
+
+
+@pytest.mark.parametrize(
+    ("case_label", "branch_value"),
+    (("missing", "missing"), ("empty", "")),
+)
+def test_collector_requires_a_nullable_branch_record(
+    tmp_path: Path, case_label: str, branch_value: str
+) -> None:
+    run_root = tmp_path / f"run-branch-{case_label}"
+    _write_junit(run_root)
+    manifest_path = run_root / "manifest.yaml"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if branch_value == "missing":
+        manifest.pop("git_branch")
+    else:
+        manifest["git_branch"] = branch_value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["manifest_errors"] == [
+        "manifest.git_branch must be null or a non-empty branch record"
+    ]
+
+
+def test_collector_requires_test_candidate_provenance(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-no-test-provenance"
+    _write_junit(run_root)
+    manifest_path = run_root / "manifest.yaml"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest.pop("test_commit")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 80
+    summary = json.loads((run_root / "summary.json").read_text(encoding="utf-8"))
+    assert summary["manifest_errors"] == [
+        "manifest.test_commit must be a 40-character lowercase commit"
+    ]
+
+
+def test_collector_does_not_require_an_oci_revision_label(tmp_path: Path) -> None:
+    run_root = tmp_path / "run-no-oci-revision-label"
+    _write_junit(run_root)
+    manifest = json.loads((run_root / "manifest.yaml").read_text(encoding="utf-8"))
+    assert "oci_labels" not in manifest
+    assert "org.opencontainers.image.revision" not in json.dumps(manifest)
+
+    completed = _run_collector(tmp_path, run_root.name)
+
+    assert completed.returncode == 0, completed.stderr
 
 
 def test_collector_requires_image_ids_for_every_image(tmp_path: Path) -> None:

@@ -390,13 +390,22 @@ def _manifest_errors(run_root: Path, run_id: str) -> list[str]:
     git_commit = manifest.get("git_commit")
     if not isinstance(git_commit, str) or not re.fullmatch(r"[0-9a-f]{40}", git_commit):
         errors.append("manifest.git_commit must be a 40-character lowercase commit")
-    if manifest.get("git_branch") != "test/t-m0-m1":
-        errors.append("manifest.git_branch must equal 'test/t-m0-m1'")
+    git_branch = manifest.get("git_branch")
+    if "git_branch" not in manifest or (
+        git_branch is not None
+        and (not isinstance(git_branch, str) or not git_branch)
+    ):
+        errors.append("manifest.git_branch must be null or a non-empty branch record")
     platform_commit = manifest.get("platform_commit")
     if not isinstance(platform_commit, str) or not re.fullmatch(
         r"[0-9a-f]{40}", platform_commit
     ):
         errors.append("manifest.platform_commit must be a 40-character lowercase commit")
+    test_commit = manifest.get("test_commit")
+    if not isinstance(test_commit, str) or not re.fullmatch(
+        r"[0-9a-f]{40}", test_commit
+    ):
+        errors.append("manifest.test_commit must be a 40-character lowercase commit")
     images = manifest.get("images")
     if not isinstance(images, dict) or not images or not all(
         isinstance(value, str) and value for value in images.values()
@@ -1379,7 +1388,14 @@ def _master_main(
         for manifest in (infrastructure_manifest, runtime_manifest)
         if manifest is not None
     ]
-    for field in ("git_commit", "git_branch", "platform_commit", "contract_tag", "contract_commit", "contract_version"):
+    for field in (
+        "git_commit",
+        "platform_commit",
+        "test_commit",
+        "contract_tag",
+        "contract_commit",
+        "contract_version",
+    ):
         values = {manifest.get(field) for manifest in child_manifests}
         if len(child_manifests) == 2 and len(values) != 1:
             manifest_errors.append(f"child manifests disagree on {field}")
@@ -1517,8 +1533,9 @@ def _master_main(
         "contract_commit": _FROZEN_CONTRACT_COMMIT,
         "contract_version": _FROZEN_CONTRACT_VERSION,
         "git_commit": first_manifest.get("git_commit", ""),
-        "git_branch": first_manifest.get("git_branch", ""),
+        "git_branch": first_manifest.get("git_branch"),
         "platform_commit": first_manifest.get("platform_commit", ""),
+        "test_commit": first_manifest.get("test_commit", ""),
         "test_suite": "m0-m1-acceptance",
         "child_runs": {
             "infrastructure": infrastructure_run_id,

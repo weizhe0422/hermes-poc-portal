@@ -17,6 +17,24 @@ frozen_contract:
     - hermes-poc-specification-v0.1/test-cases/runtime/cases.yaml
   precedence_note: Frozen contracts/versions.yaml is authoritative where the legacy work packet still assigns RUNTIME-008, RUNTIME-009, RUNTIME-012, or RUNTIME-013 to T-M2.
 
+acceptance_source_provenance:
+  classification: TEST_DEFECT
+  implementation: scripts/verify-acceptance-source
+  required_inputs: [EXPECTED_INTEGRATION_COMMIT, EXPECTED_INTEGRATION_REF, PLATFORM_COMMIT, TEST_COMMIT, CONTRACT_TAG, EXPECTED_CONTRACT_COMMIT]
+  guard_order: before Docker, build, or formal artifact creation
+  checkout_modes: [DETACHED, BRANCH_AT_EXACT_INTEGRATION_COMMIT]
+  branch_semantics: record-only
+  manifest_identity:
+    git_commit: Integration commit
+    git_branch: null for detached HEAD, otherwise the observed local branch
+    platform_commit: Platform component candidate
+    test_commit: Test suite candidate
+    contract_tag: Frozen Contract tag
+    contract_commit: Frozen Contract peeled commit
+  image_identity: image reference plus immutable sha256 image ID
+  oci_revision_required: false
+  expected_result_impact: NONE
+
 acceptance_inventory:
   total_cases: 31
   executed_frozen_cases: 21

@@ -86,8 +86,16 @@ npm run typecheck
 The supported end-to-end entry point remains:
 
 ```sh
+# First export the six repository-level provenance variables documented in README.md.
 scripts/run-portal-e2e
 ```
+
+The entrypoint calls `scripts/verify-acceptance-source` before Docker, build, or
+artifact creation. It accepts detached HEAD or a branch only when HEAD exactly
+equals the required Integration commit, the observed remote ref matches, all
+candidate ancestry/ownership checks pass, and the full working tree is clean.
+Branch is recorded rather than used as a gate. Runtime image identity is stored
+as reference plus immutable image ID; no OCI revision label is required.
 
 ## Artifacts
 

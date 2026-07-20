@@ -52,9 +52,23 @@ Machine 判定；Engine-only Expected 由隔離 Engine 證據 gate，不能由 A
 
 ## 建置與執行
 
-正式入口要求目前 branch 為 `test/t-m0-m1`、Git tree clean、Docker daemon 可用，且
-production image 的 `org.opencontainers.image.revision` 必須等於完整 40 字元
-`PLATFORM_COMMIT`。
+正式入口先執行 `scripts/verify-acceptance-source`。它在任何 Docker、build、trap 或
+artifact 建立前，要求固定 Integration commit/ref、Contract/Platform/Test ancestry、
+各 ownership tree、Fixture tree 與 clean working tree 全部相符。Detached HEAD 與指向
+同一 Integration commit 的 branch checkout 都可使用；branch 只記錄，不參與 verdict。
+Image 身分以執行時 reference 與 immutable `sha256:` image ID 保存，不依賴 OCI
+revision label。
+
+正式執行與 `--build-only` 共用下列必填 provenance：
+
+```sh
+export EXPECTED_INTEGRATION_COMMIT=<40-character-integration-commit>
+export EXPECTED_INTEGRATION_REF=origin/integration/poc-rc-001
+export PLATFORM_COMMIT=<40-character-platform-commit>
+export TEST_COMMIT=<40-character-test-commit>
+export CONTRACT_TAG=contract-m0-m1-v0.2.1
+export EXPECTED_CONTRACT_COMMIT=febdea906a51bab59e582755c495ed2253fb64b8
+```
 
 只建置 Runner/Fixture images：
 
@@ -149,10 +163,17 @@ npm run typecheck
     └── runner-status.json
 ```
 
-Manifest 記錄 Test/Platform/Contract commit、image tag 與執行時 immutable image ID。
+Manifest 的 `git_commit` 記錄 Integration commit，`test_commit`、`platform_commit`、
+Contract tag/commit 分別保存各 Candidate；`git_branch` 在 detached checkout 為 JSON
+`null`，在 branch checkout 則是純記錄字串。每個 child 的 candidate identity 必須一致。
+Image 以 reference 與執行時 immutable image ID 成對記錄；不要求 OCI revision label。
 Collector fail-closed 檢查 inventory、metadata、必要 artifact、cleanup、source-tree
 cleanliness、Critical verdict，並掃描文字、binary byte 與 ZIP member 中的合成 Secret。
 Screenshot/video 未做 OCR，仍是明確的 Coverage Gap。
+
+既有 `BASELINE_FAIL_OLD_PLATFORM` 證據不會被新 schema 改寫；archival validation 使用
+其 producer Test commit 的 schema 與既有 `SHA256SUMS`，不能把舊 baseline 升格為本次
+Acceptance input。
 
 ## Synthetic Fixture
 

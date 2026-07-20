@@ -14,6 +14,7 @@
     "git_commit",
     "git_branch",
     "platform_commit",
+    "test_commit",
     "test_suite",
     "images",
     "image_ids",
@@ -33,8 +34,9 @@
     },
     "contract_version": {"const": "0.2.1"},
     "git_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
-    "git_branch": {"const": "test/t-m0-m1"},
+    "git_branch": {"type": ["string", "null"], "minLength": 1},
     "platform_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "test_commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
     "test_suite": {
       "type": "string",
       "enum": ["controller-e2e", "portal-e2e", "m0-m1-acceptance"]
